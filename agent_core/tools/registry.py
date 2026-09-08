@@ -1,0 +1,1 @@
+# Register available tools, expose their schemas, and look up tool functions by name

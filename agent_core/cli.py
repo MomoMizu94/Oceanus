@@ -1,0 +1,1 @@
+# Accept a coding task, load the coding agent settings, and display its progress

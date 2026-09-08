@@ -1,0 +1,1 @@
+# Entry point for running the coding agent with python -m agent_core

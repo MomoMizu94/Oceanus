@@ -1,0 +1,1 @@
+# Register tools and expose their function-calling schemas to the model
