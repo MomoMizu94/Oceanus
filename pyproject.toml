@@ -1,1 +1,20 @@
-# Python project metadata and dependencies, including the Phase 1 model SDK
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oceanus"
+version = "0.1.0"
+description = "A hand-written agent core with coding and research agents"
+requires-python = ">=3.11"
+dependencies = [
+    "openai",
+]
+
+# Both top-level packages belong to the same project.
+[tool.setuptools.packages.find]
+include = ["agent_core*", "agents*"]
+
+# Keep the coding agent's prompt and settings available after installation.
+[tool.setuptools.package-data]
+"agents.coding" = ["*.md", "*.yaml"]

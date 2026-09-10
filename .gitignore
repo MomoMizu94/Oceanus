@@ -1,2 +1,14 @@
 # Implementation plan
 PLAN.md
+
+# Local environment and credentials
+.venv/
+.env
+.env.*
+
+# Generated Python files
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
