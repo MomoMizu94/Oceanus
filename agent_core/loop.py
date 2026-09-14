@@ -1,6 +1,5 @@
 # Call the model, execute requested tools, append results, and repeat until done
 import json
-from importlib.resources import files
 
 from agent_core.model_client import call_model
 from agent_core.tools.registry import get_tool_function
@@ -71,18 +70,3 @@ def run_agent(task: str, max_turns: int = 10, system_prompt: str = "") -> str:
     return (
         f"Stopped after {max_turns} was hit: the model still required more tool calls."
     )
-
-
-if __name__ == "__main__":
-        coding_prompt = (
-            files("agents.coding")
-            .joinpath("system_prompt.md")
-            .read_text(encoding="utf-8")
-        )
-        
-        answer = run_agent(
-            "Read agent_core/tools/files.py and explain its available tools. "
-            "Do not edit any files.",
-            system_prompt=coding_prompt
-        )
-        print("Agent: ", answer)
