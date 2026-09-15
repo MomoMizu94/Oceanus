@@ -1,10 +1,10 @@
 # Call the model, execute requested tools, append results, and repeat until done
 import json
 
-from agent_core.model_client import call_model
+from agent_core.model_client import call_model, DEFAULT_MODEL
 from agent_core.tools.registry import get_tool_function
 
-def run_agent(task: str, max_turns: int = 10, system_prompt: str = "") -> str:
+def run_agent(task: str, max_turns: int = 10, system_prompt: str = "", model: str = DEFAULT_MODEL) -> str:
     """ Run a task until model answers or hits limit """
     if max_turns < 1:
         raise ValueError ("max_turns must be at least 1")
@@ -14,7 +14,7 @@ def run_agent(task: str, max_turns: int = 10, system_prompt: str = "") -> str:
     if system_prompt:
         conversation_history.append(
             {
-                "role": "developer",
+                "role": "system",
                 "content": system_prompt
             }
         )
@@ -29,7 +29,7 @@ def run_agent(task: str, max_turns: int = 10, system_prompt: str = "") -> str:
     for turn in range(1, max_turns + 1):
         print(f"This is model turn: {turn}/{max_turns}")
 
-        reply = call_model(conversation_history)
+        reply = call_model(conversation_history, model=model)
         # Preserve agent's tool requests before adding to result
         conversation_history.append(reply.model_dump(exclude_none=True))
 
