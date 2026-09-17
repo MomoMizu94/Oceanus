@@ -4,14 +4,16 @@ import json
 from agent_core.model_client import call_model, DEFAULT_MODEL
 from agent_core.tools.registry import get_tool_function
 
-def run_agent(task: str, max_turns: int = 10, system_prompt: str = "", model: str = DEFAULT_MODEL) -> str:
+def run_agent(task: str, max_turns: int = 10, system_prompt: str = "", model: str = DEFAULT_MODEL, conversation_history: list[dict] | None = None) -> str:
     """ Run a task until model answers or hits limit """
     if max_turns < 1:
         raise ValueError ("max_turns must be at least 1")
 
-    conversation_history = []
+    if conversation_history is None:
+        conversation_history = []
 
-    if system_prompt:
+    # if system prompt and list is empty -> append system prompt to it
+    if system_prompt and not conversation_history:
         conversation_history.append(
             {
                 "role": "system",
@@ -30,16 +32,17 @@ def run_agent(task: str, max_turns: int = 10, system_prompt: str = "", model: st
         print(f"This is model turn: {turn}/{max_turns}")
 
         reply = call_model(conversation_history, model=model)
+
+        # Don't save tool requests that will not be executed
+        if reply.tool_calls and turn == max_turns:
+            break
+
         # Preserve agent's tool requests before adding to result
         conversation_history.append(reply.model_dump(exclude_none=True))
 
         # If no tool requests -> task finished
         if not reply.tool_calls:
             return reply.content or ""
-
-        # If not turns left & tool call is requested -> exit
-        if turn == max_turns:
-            break
 
         # Show explanations regarding the requested tools
         if reply.content:

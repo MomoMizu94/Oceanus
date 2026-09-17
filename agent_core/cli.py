@@ -1,9 +1,11 @@
 # Accept a coding task, load the coding agent settings, and display its progress
 import argparse
 from importlib.resources import files
+from pathlib import Path
 
 from agent_core.loop import run_agent
 from agent_core.model_client import DEFAULT_MODEL
+from agent_core.memory.session import load_session, save_session
 
 
 def main() -> None:
@@ -21,6 +23,16 @@ def main() -> None:
         default=DEFAULT_MODEL,
         help=f"LiteLLM model identifier (default: {DEFAULT_MODEL})."
     )
+    parser.add_argument(
+        "--save",
+        type=Path,
+        help="Save the updated conversation to JSON file."
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        help="Load a conversation from JSON file before the task."
+    )
 
     # Reads arguments
     arguments = parser.parse_args()
@@ -32,6 +44,14 @@ def main() -> None:
         parser.error("--model must not be empty!")
     if arguments.max_turns < 1:
         parser.error("--max-turns must be at least 1!")
+
+    # Fresh run -> empty list; resumed run -> load_session()
+    conversation_history = []
+    if arguments.resume is not None:
+        try:
+            conversation_history = load_session(arguments.resume)
+        except (OSError, ValueError) as error:
+            parser.error(f"Couldn't load the session: {error}")
 
     # Prompt laoding
     coding_prompt = (
@@ -45,6 +65,15 @@ def main() -> None:
         arguments.task,
         max_turns=arguments.max_turns,
         system_prompt=coding_prompt,
-        model=arguments.model
+        model=arguments.model,
+        conversation_history=conversation_history
     )
     print("Agent:", answer)
+
+    if arguments.save is not None:
+        try:
+            save_session(arguments.save, conversation_history)
+        except (OSError, ValueError) as error:
+            parser.error(f"Could not save session: {error}")
+
+        print("Session saved succesfully:", arguments.save)
