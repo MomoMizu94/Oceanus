@@ -9,6 +9,9 @@ description = "A hand-written agent core with coding and research agents"
 requires-python = ">=3.11"
 dependencies = [
     "litellm",
+    "fastapi",
+    "uvicorn",
+    "pydantic"
 ]
 
 # Both top-level packages belong to the same project.
