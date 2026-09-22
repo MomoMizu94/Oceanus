@@ -1,11 +1,26 @@
 # Call the model, execute requested tools, append results, and repeat until done
 import json
+from collections.abc import Callable
 
 from agent_core.model_client import call_model, DEFAULT_MODEL
 from agent_core.tools.registry import get_tool_function
 
-def run_agent(task: str, max_turns: int = 10, system_prompt: str = "", model: str = DEFAULT_MODEL, conversation_history: list[dict] | None = None) -> str:
+def run_agent(
+        task: str,
+        max_turns: int = 10,
+        system_prompt: str = "",
+        model: str = DEFAULT_MODEL,
+        conversation_history: list[dict] | None = None,
+        on_progress: Callable[[str], None] | None = None,
+        on_approval: Callable[[str, str], bool] | None = None
+        ) -> str:
     """ Run a task until model answers or hits limit """
+
+    def report_progress(message: str) -> None:
+        """ Helper function for callback """
+        if on_progress is not None:
+            on_progress(message)
+
     if max_turns < 1:
         raise ValueError ("max_turns must be at least 1")
 
@@ -29,7 +44,7 @@ def run_agent(task: str, max_turns: int = 10, system_prompt: str = "", model: st
     )
 
     for turn in range(1, max_turns + 1):
-        print(f"This is model turn: {turn}/{max_turns}")
+        report_progress(f"This is model turn: {turn}/{max_turns}")
 
         reply = call_model(conversation_history, model=model)
 
@@ -46,17 +61,22 @@ def run_agent(task: str, max_turns: int = 10, system_prompt: str = "", model: st
 
         # Show explanations regarding the requested tools
         if reply.content:
-            print("Agent: ", reply.content)
+            report_progress(f"Agent: {reply.content}")
 
         for tool_call in reply.tool_calls:
             # Translate requests into function calls
             tool_name = tool_call.function.name
-            print("Running tool:", tool_name)
+            report_progress(f"Running tool: {tool_name}")
 
             try:
                 arguments = json.loads(tool_call.function.arguments)
                 tool_function = get_tool_function(tool_name)
-                result = tool_function(**arguments)
+        
+                if tool_name == "run_shell":
+                    result = tool_function(**arguments, on_approval=on_approval)
+                else:
+                    result = tool_function(**arguments)
+
             except (ValueError, KeyError, TypeError, OSError) as error:
                 # Report failed tool execution so model can respond
                 result = f"Tool error: {type(error).__name__}: {error}"

@@ -11,7 +11,8 @@ dependencies = [
     "litellm",
     "fastapi",
     "uvicorn",
-    "pydantic"
+    "pydantic",
+    "textual"
 ]
 
 # Both top-level packages belong to the same project.

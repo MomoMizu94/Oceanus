@@ -1,14 +1,16 @@
 # Implement run_shell and return command output after manual approval
 import subprocess
 from pathlib import Path
+from collections.abc import Callable
 
-from agent_core.guardrails import approve_shell
 
-def run_shell(command: str) -> str:
-    """ Run approved shell commmand and return output + status """
+def run_shell(command: str, *, on_approval: Callable[[str, str], bool] | None = None) -> str:
+    """ Run approved shell commmand after approval """
     working_directory = str(Path.cwd())
 
-    if not approve_shell(command, working_directory):
+    if on_approval is None:
+        return "Command denied: no approval handler was supplied. Nothing was executed."
+    if on_approval(command, working_directory) is not True:
         return "Command denied by the user. Nothing was executed."
 
     try:

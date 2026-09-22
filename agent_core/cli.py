@@ -6,6 +6,7 @@ from pathlib import Path
 from agent_core.loop import run_agent
 from agent_core.model_client import DEFAULT_MODEL
 from agent_core.memory.session import load_session, save_session
+from agent_core.guardrails import approve_shell
 
 
 def main() -> None:
@@ -66,7 +67,9 @@ def main() -> None:
         max_turns=arguments.max_turns,
         system_prompt=coding_prompt,
         model=arguments.model,
-        conversation_history=conversation_history
+        conversation_history=conversation_history,
+        on_progress=print,
+        on_approval=approve_shell
     )
     print("Agent:", answer)
 
