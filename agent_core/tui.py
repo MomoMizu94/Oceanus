@@ -2,9 +2,13 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header, Input, RichLog, Select
 from textual import work
 from importlib.resources import files
+from pathlib import Path
+from uuid import uuid4
 
 from agent_core.loop import run_agent
 from agent_core.approval_screen import ShellApprovalScreen
+from agent_core.memory.session import load_session, save_session
+from agent_core.session_picker import SessionPicker
 
 
 class OceanusApp(App):
@@ -13,6 +17,8 @@ class OceanusApp(App):
     TITLE = "Oceanus"
 
     BINDINGS = [
+        ("ctrl+o", "open_session", "Open session"),
+        ("ctrl+s", "save_session", "Save session"),
         ("ctrl+q", "quit", "Quit")
     ]
 
@@ -40,6 +46,10 @@ class OceanusApp(App):
         self.model = "ollama_chat/qwen2.5:7b"
         self.busy = False
         self.conversation_history: list[dict] = []
+        self.session_path = (
+            Path.home() / ".local" / "share" / "oceanus" / "sessions"
+            / f"session-{uuid4().hex}.json"
+        )
         self.coding_prompt = (
             files("agents.coding")
             .joinpath("system_prompt.md")
@@ -167,6 +177,94 @@ class OceanusApp(App):
         task_input = self.query_one("#task-input", Input)
         task_input.disabled = False
         task_input.focus()
+
+    def action_open_session(self) -> None:
+        # Do not open another picker over an existing dialog
+        if len(self.screen_stack) > 1:
+            return
+
+        if self.busy:
+            self.notify("Wait for the current task to finish before opening a session.")
+            return
+
+        task_input = self.query_one("#task-input", Input)
+
+        if self.conversation_history or task_input.value:
+            self.notify(
+                "Open sessions in a fresh TUI."
+                "Save you conversation and restart first."
+            )
+            return
+
+        try:
+            paths = [
+                path
+                for path in self.session_path.parent.glob("*json")
+                if path.is_file()
+            ]
+            paths.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        except OSError as error:
+            self.notify(f"Could not list sessions: {error}", severity="error")
+            return
+
+        if not paths:
+            self.notify("No saved sessions found.")
+            return
+
+        self.push_screen(SessionPicker(paths), self.restore_session)
+
+    def restore_session(self, path: Path | None) -> None:
+        if path is None:
+            return
+
+        try:
+            history = load_session(path)
+
+            if not history:
+                raise ValueError("This session is empty!")
+        except (OSError, ValueError) as error:
+            self.notify(f"Could not open session: {error}", severity="error")
+            return
+
+        self.conversation_history = history
+        self.session_path = path
+
+        self.query_one("#conversation", RichLog).clear()
+
+        labels = {
+            "user": "You",
+            "assistant": "Agent",
+            "tool": "Tool result"
+        }
+
+        for message in history:
+            role = message.get("role")
+            content = message.get("content")
+
+            if role in ("user", "assistant", "tool") and isinstance(content, str):
+                self.write_message(f"{labels[role]}: {content}")
+
+        self.write_message(f"Session opened: {path}")
+        self.query_one("#task-input", Input).focus()
+
+    def action_save_session(self) -> None:
+        """ Checks if saving is appropriate, creates directory and calls for helper """
+        if self.busy:
+            self.notify("Wait for the current task to finish before saving.")
+            return
+
+        if not self.conversation_history:
+            self.notify("There is no conversation to save yet.")
+            return
+
+        try:
+            self.session_path.parent.mkdir(parents=True, exist_ok=True)
+            save_session(self.session_path, self.conversation_history)
+        except (OSError, ValueError, TypeError) as error:
+            self.notify(f"Could not save the session: {error}", severity="error")
+            return
+
+        self.write_message(f"Session saved: {self.session_path}")
 
     async def action_quit(self) -> None:
         if self.busy:
