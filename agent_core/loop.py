@@ -12,7 +12,8 @@ def run_agent(
         model: str = DEFAULT_MODEL,
         conversation_history: list[dict] | None = None,
         on_progress: Callable[[str], None] | None = None,
-        on_approval: Callable[[str, str], bool] | None = None
+        on_approval: Callable[[str, str], bool] | None = None,
+        on_tool_result: Callable[[str, str], None] | None = None
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -89,6 +90,9 @@ def run_agent(
                     "content": result
                 }
             )
+
+            if on_tool_result is not None:
+                on_tool_result(tool_name, result)
 
     return (
         f"Stopped after {max_turns} was hit: the model still required more tool calls."
