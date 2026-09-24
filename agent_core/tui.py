@@ -1,9 +1,11 @@
 from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header, Input, RichLog, Select
+from textual.binding import Binding
 from textual import work
 from importlib.resources import files
 from pathlib import Path
 from uuid import uuid4
+from threading import Event
 
 from agent_core.loop import run_agent
 from agent_core.approval_screen import ShellApprovalScreen
@@ -17,6 +19,7 @@ class OceanusApp(App):
     TITLE = "Oceanus"
 
     BINDINGS = [
+        Binding("ctrl+x", "cancel_task", "Cancel task", priority=True),
         ("ctrl+o", "open_session", "Open session"),
         ("ctrl+s", "save_session", "Save session"),
         ("ctrl+q", "quit", "Quit")
@@ -45,6 +48,7 @@ class OceanusApp(App):
         super().__init__()
         self.model = "ollama_chat/qwen2.5:7b"
         self.busy = False
+        self.cancel_event = Event()
         self.conversation_history: list[dict] = []
         self.session_path = (
             Path.home() / ".local" / "share" / "oceanus" / "sessions"
@@ -99,6 +103,7 @@ class OceanusApp(App):
         if not task or self.busy:
             return
 
+        self.cancel_event.clear()
         self.busy = True
         # Disables model selection if busy
         self.query_one("#model-select", Select).disabled = True
@@ -138,8 +143,12 @@ class OceanusApp(App):
         self.sub_title = self.model
 
     async def show_shell_approval(self, command: str, working_directory: str) -> bool:
+        # Avoid openining a dialog after cancellation
+        if self.cancel_event.is_set():
+            return False
+
         decision = await self.push_screen_wait(ShellApprovalScreen(command, working_directory))
-        return decision is True
+        return decision is True and not self.cancel_event.is_set()
     
 
     @work(thread=True)
@@ -153,7 +162,8 @@ class OceanusApp(App):
                 conversation_history=history,
                 on_progress=self.report_progress,
                 on_approval=self.request_approval,
-                on_tool_result=self.report_tool_result
+                on_tool_result=self.report_tool_result,
+                should_cancel=self.cancel_event.is_set,
             )
         except Exception as error:
             self.call_from_thread(self.finish_task, f"Error: {type(error).__name__}: {error}", None)
@@ -265,6 +275,18 @@ class OceanusApp(App):
             return
 
         self.write_message(f"Session saved: {self.session_path}")
+
+    def action_cancel_task(self) -> None:
+        if not self.busy or self.cancel_event.is_set():
+            return
+
+        self.cancel_event.set()
+        self.sub_title = f"{self.model} | Cancelling..."
+
+        if isinstance(self.screen, ShellApprovalScreen):
+            self.screen.dismiss(False)
+
+        self.notify("Cancellation requested. Waiting for the current operation to finish.")
 
     async def action_quit(self) -> None:
         if self.busy:

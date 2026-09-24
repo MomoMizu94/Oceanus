@@ -73,12 +73,12 @@ TOOL_REGISTRY = {
             "function": {
                 "name": "run_shell",
                 "description": (
-                    "Run a shell command in the agent's working directory "
-                    "after manual user approval. Returns the exit code, "
-                    "standard output and standard error. "
+                    "Request user approval for a shell command, then execute it only "
+                    "if approved. Each call requires a separate approval decision. "
+                    "Returns the exit code, standard output and standard error. "
                     "Commands time out after 60 seconds. "
-                    "If approval is denied, report the denial and do not "
-                    "retry or attempt to bypass it."
+                    "If denied, report the denial. Do not retry or bypass it on your own. "
+                    "A later explicit user request may initiate a new approval request."
                 ),
                 "strict": True,
                 "parameters": {

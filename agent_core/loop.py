@@ -13,7 +13,8 @@ def run_agent(
         conversation_history: list[dict] | None = None,
         on_progress: Callable[[str], None] | None = None,
         on_approval: Callable[[str, str], bool] | None = None,
-        on_tool_result: Callable[[str, str], None] | None = None
+        on_tool_result: Callable[[str, str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -21,6 +22,13 @@ def run_agent(
         """ Helper function for callback """
         if on_progress is not None:
             on_progress(message)
+
+    def cancel_requested() -> bool:
+        """ Helper function for task cancellation """
+        if should_cancel is None:
+            return False
+
+        return should_cancel()
 
     if max_turns < 1:
         raise ValueError ("max_turns must be at least 1")
@@ -47,7 +55,15 @@ def run_agent(
     for turn in range(1, max_turns + 1):
         report_progress(f"This is model turn: {turn}/{max_turns}")
 
+        # Check for cancellation request
+        if cancel_requested():
+            return "Task cancelled."
+
         reply = call_model(conversation_history, model=model)
+
+        # Check for cancellation request
+        if cancel_requested():
+            return "Task cancelled."
 
         # Don't save tool requests that will not be executed
         if reply.tool_calls and turn == max_turns:
@@ -67,20 +83,24 @@ def run_agent(
         for tool_call in reply.tool_calls:
             # Translate requests into function calls
             tool_name = tool_call.function.name
-            report_progress(f"Running tool: {tool_name}")
 
-            try:
-                arguments = json.loads(tool_call.function.arguments)
-                tool_function = get_tool_function(tool_name)
-        
-                if tool_name == "run_shell":
-                    result = tool_function(**arguments, on_approval=on_approval)
-                else:
-                    result = tool_function(**arguments)
+            if cancel_requested():
+                result = "Tool skipped: task cancelled before execution."
+            else:
+                report_progress(f"Running tool: {tool_name}")
 
-            except (ValueError, KeyError, TypeError, OSError) as error:
-                # Report failed tool execution so model can respond
-                result = f"Tool error: {type(error).__name__}: {error}"
+                try:
+                    arguments = json.loads(tool_call.function.arguments)
+                    tool_function = get_tool_function(tool_name)
+            
+                    if tool_name == "run_shell":
+                        result = tool_function(**arguments, on_approval=on_approval)
+                    else:
+                        result = tool_function(**arguments)
+
+                except (ValueError, KeyError, TypeError, OSError) as error:
+                    # Report failed tool execution so model can respond
+                    result = f"Tool error: {type(error).__name__}: {error}"
 
             # Record results
             conversation_history.append(
@@ -94,6 +114,9 @@ def run_agent(
             if on_tool_result is not None:
                 on_tool_result(tool_name, result)
 
+        if cancel_requested():
+            return "Task cancelled."
+
     return (
-        f"Stopped after {max_turns} was hit: the model still required more tool calls."
-    )
+          f"Stopped after {max_turns} was hit: the model still required more tool calls."
+      )
