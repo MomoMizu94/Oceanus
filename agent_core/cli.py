@@ -6,8 +6,12 @@ from pathlib import Path
 from agent_core.loop import run_agent
 from agent_core.model_client import DEFAULT_MODEL
 from agent_core.memory.session import load_session, save_session
-from agent_core.guardrails import approve_shell
+from agent_core.guardrails import approve_shell, approve_file
 
+
+def print_tool_result(tool_name: str, result: str) -> None:
+    print(f"\nTool result ({tool_name}):")
+    print(result)
 
 def main() -> None:
     """ Read from CLI and run the coding agent. """
@@ -69,7 +73,9 @@ def main() -> None:
         model=arguments.model,
         conversation_history=conversation_history,
         on_progress=print,
-        on_approval=approve_shell
+        on_approval=approve_shell,
+        on_file_approval=approve_file,
+        on_tool_result=print_tool_result,
     )
     print("Agent:", answer)
 

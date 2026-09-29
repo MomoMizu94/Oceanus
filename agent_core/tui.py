@@ -9,6 +9,7 @@ from threading import Event
 
 from agent_core.loop import run_agent
 from agent_core.approval_screen import ShellApprovalScreen
+from agent_core.file_approval_screen import FileApprovalScreen
 from agent_core.memory.session import load_session, save_session
 from agent_core.session_picker import SessionPicker
 
@@ -122,6 +123,10 @@ class OceanusApp(App):
     def report_tool_result(self, tool_name: str, result: str) -> None:
         self.call_from_thread(self.write_message, f"Tool result: ({tool_name}):\n{result}")
 
+    def request_file_approval(self, operation: str, path: str) -> bool:
+        # Schedules show_file_approval to the UI thread
+        return self.call_from_thread(self.show_file_approval, operation, path)    
+
     def request_approval(self, command: str, working_directory: str) -> bool:
         # Schedules show_shell_approval to the UI thread
         return self.call_from_thread(self.show_shell_approval, command, working_directory)
@@ -141,6 +146,14 @@ class OceanusApp(App):
 
         self.model = event.value
         self.sub_title = self.model
+
+    async def show_file_approval(self, operation: str, path: str) -> bool:
+        # Avoid opening a dialog after cancellation
+        if self.cancel_event.is_set():
+            return False
+
+        decision = await self.push_screen_wait(FileApprovalScreen(operation, path))
+        return decision is True and not self.cancel_event.is_set()
 
     async def show_shell_approval(self, command: str, working_directory: str) -> bool:
         # Avoid openining a dialog after cancellation
@@ -162,8 +175,10 @@ class OceanusApp(App):
                 conversation_history=history,
                 on_progress=self.report_progress,
                 on_approval=self.request_approval,
+                on_file_approval=self.request_file_approval,
                 on_tool_result=self.report_tool_result,
                 should_cancel=self.cancel_event.is_set,
+
             )
         except Exception as error:
             self.call_from_thread(self.finish_task, f"Error: {type(error).__name__}: {error}", None)
@@ -283,7 +298,7 @@ class OceanusApp(App):
         self.cancel_event.set()
         self.sub_title = f"{self.model} | Cancelling..."
 
-        if isinstance(self.screen, ShellApprovalScreen):
+        if isinstance(self.screen, (ShellApprovalScreen, FileApprovalScreen)):
             self.screen.dismiss(False)
 
         self.notify("Cancellation requested. Waiting for the current operation to finish.")

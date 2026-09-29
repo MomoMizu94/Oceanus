@@ -22,8 +22,9 @@ TOOL_REGISTRY = {
                         "path": {
                             "type": "string",
                             "description": (
-                                "File path, either absolute or relative to "
-                                "the directory where the agent was launched."
+                                "File path, either absolute or relative to the workspace directory. "
+                                "Access outside the workspace requires explicit user approval "
+                                "for this operation. Access is denied if approval is unavailable."
                             ),
                         },
                     },
@@ -51,8 +52,9 @@ TOOL_REGISTRY = {
                         "path": {
                             "type": "string",
                             "description": (
-                                "File path, either absolute or relative to "
-                                "the directory where the agent was launched."
+                                "File path, either absolute or relative to the workspace directory. "
+                                "Access outside the workspace requires explicit user approval "
+                                "for this operation. Access is denied if approval is unavailable."
                             ),
                         },
                         "content": {

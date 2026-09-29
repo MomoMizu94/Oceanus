@@ -1,6 +1,7 @@
 # Call the model, execute requested tools, append results, and repeat until done
 import json
 from collections.abc import Callable
+from pathlib import Path
 
 from agent_core.model_client import call_model, DEFAULT_MODEL
 from agent_core.tools.registry import get_tool_function
@@ -14,7 +15,8 @@ def run_agent(
         on_progress: Callable[[str], None] | None = None,
         on_approval: Callable[[str, str], bool] | None = None,
         on_tool_result: Callable[[str, str], None] | None = None,
-        should_cancel: Callable[[], bool] | None = None
+        should_cancel: Callable[[], bool] | None = None,
+        on_file_approval: Callable[[str, str], bool] | None = None
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -30,20 +32,33 @@ def run_agent(
 
         return should_cancel()
 
+    def request_file_approval(operation: str, path: str) -> bool:
+        """ Helper function for approval requests. """
+        if cancel_requested() or on_file_approval is None:
+            return False
+
+        decision = on_file_approval(operation, path)
+        return decision is True and not cancel_requested()
+
     if max_turns < 1:
         raise ValueError ("max_turns must be at least 1")
+
+    # Get current workspace path
+    workspace_root = Path.cwd().resolve()
 
     if conversation_history is None:
         conversation_history = []
 
-    # if system prompt and list is empty -> append system prompt to it
-    if system_prompt and not conversation_history:
-        conversation_history.append(
-            {
-                "role": "system",
-                "content": system_prompt
-            }
-        )
+    # Use supplied instructions for fresh and resumed sessions
+    if system_prompt:
+        system_message = {
+            "role": "system",
+            "content": system_prompt
+        }
+        if conversation_history and conversation_history[0].get("role") == "system":
+            conversation_history[0] = system_message
+        else:
+            conversation_history.insert(0, system_message)
 
     conversation_history.append(
         {
@@ -83,9 +98,16 @@ def run_agent(
         for tool_call in reply.tool_calls:
             # Translate requests into function calls
             tool_name = tool_call.function.name
+            is_file_tool = tool_name in ("read_file", "write_file")
+            file_result = None
 
             if cancel_requested():
                 result = "Tool skipped: task cancelled before execution."
+                if is_file_tool:
+                    file_result = {
+                        "status": "skipped",
+                        "message": result
+                    }
             else:
                 report_progress(f"Running tool: {tool_name}")
 
@@ -95,19 +117,42 @@ def run_agent(
             
                     if tool_name == "run_shell":
                         result = tool_function(**arguments, on_approval=on_approval)
+                    elif is_file_tool:
+                        result = tool_function(**arguments, workspace_root=workspace_root, on_file_approval=request_file_approval)
                     else:
                         result = tool_function(**arguments)
 
                 except (ValueError, KeyError, TypeError, OSError) as error:
                     # Report failed tool execution so model can respond
                     result = f"Tool error: {type(error).__name__}: {error}"
+                    if is_file_tool:
+                        file_result = {
+                            "status": "error",
+                            "error_type": type(error).__name__,
+                            "message": str(error)
+                        }
+
+                else:
+                    # File operation marked as successful
+                    if is_file_tool:
+                        file_result = {
+                            "status": "success",
+                            "content": result
+                        }
+
+            model_content = result
+            if file_result is not None:
+                model_content = json.dumps(
+                    {"tool": tool_name, **file_result},
+                    ensure_ascii=False
+                )
 
             # Record results
             conversation_history.append(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": result
+                    "content": model_content
                 }
             )
 
