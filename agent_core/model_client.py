@@ -3,7 +3,7 @@ from litellm import completion
 from agent_core.tools.registry import get_tool_schemas
 
 
-DEFAULT_MODEL = "openai/gpt-4.1-mini"
+DEFAULT_MODEL = "openai/gpt-4.1"
 
 
 def call_completion(

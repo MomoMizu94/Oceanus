@@ -17,7 +17,8 @@ def run_agent(
         on_tool_result: Callable[[str, str], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
         on_file_approval: Callable[[str, str], bool] | None = None,
-        allowed_tools: set[str] | None = None
+        allowed_tools: set[str] | None = None,
+        on_tool_status: Callable[[str, str], None] | None = None,
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -168,6 +169,9 @@ def run_agent(
                 }
             )
 
+            if on_tool_status is not None and file_result is not None:
+                on_tool_status(tool_name, file_result["status"])
+            
             if on_tool_result is not None:
                 on_tool_result(tool_name, result)
 

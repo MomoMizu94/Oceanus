@@ -10,8 +10,8 @@ from agent_core.guardrails import approve_shell, approve_file
 from agent_core.tools.registry import TOOL_REGISTRY
 
 
-def print_tool_result(tool_name: str, result: str) -> None:
-    print(f"\nTool result ({tool_name}):")
+def print_tool_result(tool_name: str, result: str, status: str) -> None:
+    print(f"\nTool execution ({tool_name}): {status}")
     print(result)
 
 def main() -> None:
@@ -98,7 +98,8 @@ def main() -> None:
         on_approval=approve_shell,
         on_file_approval=approve_file,
         on_tool_result=print_tool_result,
-        allowed_tools=allowed_tools
+        allowed_tools=allowed_tools,
+        on_tool_status=print_tool_result,
     )
     print("Agent:", answer)
 

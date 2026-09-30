@@ -72,7 +72,7 @@ class OceanusApp(App):
         # Drop-down model selection
         yield Select(
             [
-                ("GPT-4.1 mini - OpenAI API", DEFAULT_MODEL)
+                ("GPT-4.1 - OpenAI API", DEFAULT_MODEL)
             ],
             value=self.model,
             allow_blank=False,
@@ -104,7 +104,7 @@ class OceanusApp(App):
             names = await asyncio.to_thread(list_ollama_models)
         except (OSError, ValueError, HTTPException):
             names = []
-            self.notify("Could not list Ollama models. Only GPT-4.1 mini is listed.", severity="warning")
+            self.notify("Could not list Ollama models. Only GPT-4.1 is listed.", severity="warning")
 
         local_options = [
             (f"{name} - Ollama", f"ollama_chat/{name}")
@@ -112,7 +112,7 @@ class OceanusApp(App):
         ]
         selector.set_options(
             [
-                ("GPT-4.1 mini - OpenAI API", DEFAULT_MODEL),
+                ("GPT-4.1 - OpenAI API", DEFAULT_MODEL),
                 *local_options,
             ]
         )
@@ -159,6 +159,12 @@ class OceanusApp(App):
 
     def report_tool_result(self, tool_name: str, result: str) -> None:
         self.call_from_thread(self.write_message, f"Tool result: ({tool_name}):\n{result}")
+
+    def report_tool_status(self, tool_name: str, status: str) -> None:
+        self.call_from_from_thread(
+            self.write_message,
+            f"Tool execution ({tool_name}): {status}"
+        )
 
     def request_file_approval(self, operation: str, path: str) -> bool:
         # Schedules show_file_approval to the UI thread
@@ -215,7 +221,7 @@ class OceanusApp(App):
                 on_file_approval=self.request_file_approval,
                 on_tool_result=self.report_tool_result,
                 should_cancel=self.cancel_event.is_set,
-
+                on_tool_status=self.report_tool_status,
             )
         except Exception as error:
             self.call_from_thread(self.finish_task, f"Error: {type(error).__name__}: {error}", None)
