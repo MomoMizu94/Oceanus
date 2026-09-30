@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from agent_core.model_client import call_model, DEFAULT_MODEL
-from agent_core.tools.registry import get_tool_function
+from agent_core.tools.registry import get_tool_function, TOOL_REGISTRY
 
 def run_agent(
         task: str,
@@ -16,7 +16,8 @@ def run_agent(
         on_approval: Callable[[str, str], bool] | None = None,
         on_tool_result: Callable[[str, str], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
-        on_file_approval: Callable[[str, str], bool] | None = None
+        on_file_approval: Callable[[str, str], bool] | None = None,
+        allowed_tools: set[str] | None = None
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -42,6 +43,15 @@ def run_agent(
 
     if max_turns < 1:
         raise ValueError ("max_turns must be at least 1")
+
+    # Tool selection for a task
+    registered_tools = set(TOOL_REGISTRY)
+    # Fixed copy for a run
+    permitted_tools = frozenset(registered_tools if allowed_tools is None else allowed_tools)
+
+    unknown_tools = permitted_tools - registered_tools
+    if unknown_tools:
+        raise ValueError(f"Unknown allowed tools: {', '.join(sorted(unknown_tools))}")
 
     # Get current workspace path
     workspace_root = Path.cwd().resolve()
@@ -74,7 +84,7 @@ def run_agent(
         if cancel_requested():
             return "Task cancelled."
 
-        reply = call_model(conversation_history, model=model)
+        reply = call_model(conversation_history, model=model, allowed_tools=permitted_tools)
 
         # Check for cancellation request
         if cancel_requested():
@@ -109,12 +119,14 @@ def run_agent(
                         "message": result
                     }
             else:
-                report_progress(f"Running tool: {tool_name}")
-
                 try:
+                    if tool_name not in permitted_tools:
+                        raise PermissionError(f"Tool is not allowed for this run: {tool_name}")
+
+                    report_progress(f"Running tool: {tool_name}")
                     arguments = json.loads(tool_call.function.arguments)
                     tool_function = get_tool_function(tool_name)
-            
+                    
                     if tool_name == "run_shell":
                         result = tool_function(**arguments, on_approval=on_approval)
                     elif is_file_tool:

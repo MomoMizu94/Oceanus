@@ -100,9 +100,20 @@ TOOL_REGISTRY = {
 }
 
 
-def get_tool_schemas() -> list[dict]:
-    """ Return tool definitions to include in a model request """
-    return [tool["schema"] for tool in TOOL_REGISTRY.values()]
+def get_tool_schemas(allowed_tools: set[str] | frozenset[str] | None = None) -> list[dict]:
+    """ Return definitions for selected tools in registry order """
+    registered_tools = set(TOOL_REGISTRY)
+    selected_tools = registered_tools if allowed_tools is None else allowed_tools
+
+    unknown_tools = selected_tools - registered_tools
+    if unknown_tools:
+        raise ValueError(f"Unknown allowed tools: {', '.join(sorted(unknown_tools))}")
+
+    return [
+        tool["schema"]
+        for name, tool in TOOL_REGISTRY.items()
+        if name in selected_tools
+    ]
 
 
 def get_tool_function(name: str) -> Callable[..., str]:

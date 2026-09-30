@@ -7,6 +7,7 @@ from agent_core.loop import run_agent
 from agent_core.model_client import DEFAULT_MODEL
 from agent_core.memory.session import load_session, save_session
 from agent_core.guardrails import approve_shell, approve_file
+from agent_core.tools.registry import TOOL_REGISTRY
 
 
 def print_tool_result(tool_name: str, result: str) -> None:
@@ -38,9 +39,30 @@ def main() -> None:
         type=Path,
         help="Load a conversation from JSON file before the task."
     )
+    tool_options = parser.add_mutually_exclusive_group()
+
+    tool_options.add_argument(
+        "--tools",
+        nargs="+",
+        action="extend",
+        choices=sorted(TOOL_REGISTRY),
+        help="Allow only these tools. Omit to allow all registered tools."
+    )
+    tool_options.add_argument(
+        "--no-tools",
+        action="store_true",
+        help="Disable all tool execution for this run."
+    )
 
     # Reads arguments
     arguments = parser.parse_args()
+
+    if arguments.no_tools:
+        allowed_tools = set()
+    elif arguments.tools is not None:
+        allowed_tools = set(arguments.tools)
+    else:
+        allowed_tools = None
 
     # Guardrails
     if not arguments.task.strip():
@@ -76,6 +98,7 @@ def main() -> None:
         on_approval=approve_shell,
         on_file_approval=approve_file,
         on_tool_result=print_tool_result,
+        allowed_tools=allowed_tools
     )
     print("Agent:", answer)
 

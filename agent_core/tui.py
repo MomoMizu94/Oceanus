@@ -6,12 +6,16 @@ from importlib.resources import files
 from pathlib import Path
 from uuid import uuid4
 from threading import Event
+import asyncio
+from http.client import HTTPException
 
 from agent_core.loop import run_agent
 from agent_core.approval_screen import ShellApprovalScreen
 from agent_core.file_approval_screen import FileApprovalScreen
 from agent_core.memory.session import load_session, save_session
 from agent_core.session_picker import SessionPicker
+from agent_core.model_client import DEFAULT_MODEL
+from agent_core.model_discovery import list_ollama_models
 
 
 class OceanusApp(App):
@@ -47,7 +51,7 @@ class OceanusApp(App):
     def __init__(self) -> None:
         """ App state initialization """
         super().__init__()
-        self.model = "ollama_chat/qwen2.5:7b"
+        self.model = DEFAULT_MODEL
         self.busy = False
         self.cancel_event = Event()
         self.conversation_history: list[dict] = []
@@ -68,11 +72,11 @@ class OceanusApp(App):
         # Drop-down model selection
         yield Select(
             [
-                ("Qwen 2.5 - local", "ollama_chat/qwen2.5:7b"),
-                ("GPT-4.1 mini - OpenAI API", "openai/gpt-4.1-mini"),
+                ("GPT-4.1 mini - OpenAI API", DEFAULT_MODEL)
             ],
             value=self.model,
             allow_blank=False,
+            disabled=True,
             id="model-select"
         )
 
@@ -85,14 +89,47 @@ class OceanusApp(App):
         )
         yield Input(
             placeholder="Type your message and press Enter",
+            disabled=True,
             id="task-input"
         )
         yield Footer()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         # Runs after interface mounts
+        self.sub_title = "Loading Ollama models..."
+        selector = self.query_one("#model-select", Select)
+        task_input = self.query_one("#task-input", Input).focus()
+
+        try:
+            names = await asyncio.to_thread(list_ollama_models)
+        except (OSError, ValueError, HTTPException):
+            names = []
+            self.notify("Could not list Ollama models. Only GPT-4.1 mini is listed.", severity="warning")
+
+        local_options = [
+            (f"{name} - Ollama", f"ollama_chat/{name}")
+            for name in names
+        ]
+        selector.set_options(
+            [
+                ("GPT-4.1 mini - OpenAI API", DEFAULT_MODEL),
+                *local_options,
+            ]
+        )
+
+        preferred = "ollama_chat/qwen2.5:7b"
+        available = {value for _, value in local_options}
+
+        if preferred in available:
+            self.model = preferred
+        else:
+            self.model = local_options[0][1] if local_options else DEFAULT_MODEL
+
+        selector.value = self.model
+        selector.disabled = False
+        task_input.disabled = False
         self.sub_title = self.model
-        self.query_one("#task-input", Input).focus()
+        task_input.focus()
 
     def write_message(self, message: str) -> None:
         self.query_one("#conversation", RichLog).write(message)
@@ -141,7 +178,7 @@ class OceanusApp(App):
             event.select.value = self.model
             return
 
-        if not isinstance(event.value, str):
+        if not isinstance(event.value, str) or event.value != event.select.value:
             return
 
         self.model = event.value
