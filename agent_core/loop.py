@@ -19,6 +19,7 @@ def run_agent(
         on_file_approval: Callable[[str, str], bool] | None = None,
         allowed_tools: set[str] | None = None,
         on_tool_status: Callable[[str, str], None] | None = None,
+        on_search_approval: Callable[[str, str, str], bool] | None = None,
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -40,6 +41,14 @@ def run_agent(
             return False
 
         decision = on_file_approval(operation, path)
+        return decision is True and not cancel_requested()
+
+    def request_search_approval(path: str, query: str, pattern: str) -> bool:
+        """ Helper for seach approvals """
+        if cancel_requested() or on_search_approval is None:
+            return False
+
+        decision = on_search_approval(path, query, pattern)
         return decision is True and not cancel_requested()
 
     if max_turns < 1:
@@ -109,7 +118,10 @@ def run_agent(
         for tool_call in reply.tool_calls:
             # Translate requests into function calls
             tool_name = tool_call.function.name
-            is_file_tool = tool_name in ("read_file", "write_file")
+            is_file_tool = tool_name in ("read_file",
+                                         "write_file",
+                                         "list_directory",
+                                         "search_files")
             file_result = None
 
             if cancel_requested():
@@ -130,6 +142,8 @@ def run_agent(
                     
                     if tool_name == "run_shell":
                         result = tool_function(**arguments, on_approval=on_approval)
+                    elif tool_name == "search_files":
+                        result = tool_function(**arguments, workspace_root=workspace_root, on_search_approval=request_search_approval)
                     elif is_file_tool:
                         result = tool_function(**arguments, workspace_root=workspace_root, on_file_approval=request_file_approval)
                     else:

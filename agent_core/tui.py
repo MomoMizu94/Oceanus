@@ -161,7 +161,7 @@ class OceanusApp(App):
         self.call_from_thread(self.write_message, f"Tool result: ({tool_name}):\n{result}")
 
     def report_tool_status(self, tool_name: str, status: str) -> None:
-        self.call_from_from_thread(
+        self.call_from_thread(
             self.write_message,
             f"Tool execution ({tool_name}): {status}"
         )
@@ -173,6 +173,9 @@ class OceanusApp(App):
     def request_approval(self, command: str, working_directory: str) -> bool:
         # Schedules show_shell_approval to the UI thread
         return self.call_from_thread(self.show_shell_approval, command, working_directory)
+
+    def request_search_approval(self, path: str, query: str, pattern: str) -> bool:
+        return self.call_from_thread(self.show_search_approval, path, query, pattern)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """ Called when model selection changes. Updates model & header.
@@ -205,6 +208,13 @@ class OceanusApp(App):
 
         decision = await self.push_screen_wait(ShellApprovalScreen(command, working_directory))
         return decision is True and not self.cancel_event.is_set()
+
+    async def show_search_approval(self, path: str, query: str, pattern: str) -> bool:
+        if self.cancel_event.is_set():
+            return False
+
+        decision = await self.push_screen_wait(FileApprovalScreen("search", path, query=query, pattern=pattern))
+        return decision is True and not self.cancel_event.is_set()
     
 
     @work(thread=True)
@@ -222,6 +232,7 @@ class OceanusApp(App):
                 on_tool_result=self.report_tool_result,
                 should_cancel=self.cancel_event.is_set,
                 on_tool_status=self.report_tool_status,
+                on_search_approval=self.request_search_approval,
             )
         except Exception as error:
             self.call_from_thread(self.finish_task, f"Error: {type(error).__name__}: {error}", None)

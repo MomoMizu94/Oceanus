@@ -4,6 +4,8 @@ from collections.abc import Callable
 
 from agent_core.tools.files import read_file, write_file
 from agent_core.tools.shell import run_shell
+from agent_core.tools.directories import list_directory
+from agent_core.tools.search import search_files
 
 
 TOOL_REGISTRY = {
@@ -96,6 +98,91 @@ TOOL_REGISTRY = {
                 }
             }
         }
+    },
+    "list_directory": {
+        "handler": list_directory,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "list_directory",
+                "description": (
+                    "List immediate child names and types in one directory, "
+                    "including hidden entries. Does not recurse, read file "
+                    "contents, or follow child symlinks. External directories "
+                    "require approval for each call. Returns JSON with path, "
+                    "entries, and truncated. If truncated is true, the listing "
+                    "is incomplete."
+                ),
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": (
+                                "Directory path, absolute or relative to the "
+                                "workspace. Use '.' for the workspace."
+                            ),
+                        },
+                        "max_entries": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000,
+                            "description": (
+                                "Maximum entries to return. "
+                                "Use 200 for a normal listing."
+                            ),
+                        },
+                    },
+                    "required": ["path", "max_entries"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    },
+    "search_files": {
+        "handler": search_files,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "search_files",
+                "description": (
+                    "Search literal, case-sensitive text in immediate UTF-8 files. "
+                    "Filter filenames with pattern. No recursion or child symlink following. "
+                    "Includes matching hidden files; does not apply .gitignore. "
+                    "External searches require approval for each directory, query, and pattern. "
+                    "Returns JSON with matches, skipped files, and truncation flags. "
+                    "Do not claim a complete search when files were skipped or results truncated."
+                ),
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": (
+                                "Directory path, absolute or relative to the workspace."
+                            ),
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": (
+                                "Literal text on one line, between 1 and 1000 characters."
+                            ),
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": (
+                                "Filename pattern such as *.py or *.txt. "
+                                "Use * for all names."
+                            ),
+                        },
+                    },
+                    "required": ["path", "query", "pattern"],
+                    "additionalProperties": False,
+                },
+            },
+        },
     },
 }
 

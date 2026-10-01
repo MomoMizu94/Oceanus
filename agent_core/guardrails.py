@@ -18,7 +18,7 @@ def approve_shell(command: str, working_directory: str) -> bool:
 
 def approve_file(operation: str, path: str) -> bool:
     """ Approve one external file operation through CLI """
-    if operation not in ("read", "write"):
+    if operation not in ("read", "write", "list"):
         return False
 
     print("\nExternal file access requested:")
@@ -27,6 +27,13 @@ def approve_file(operation: str, path: str) -> bool:
 
     if operation == "write":
         print("This may create a file or overwrite its entire contents.")
+
+    if operation == "list":
+        print(
+            "Lists immediate child names and types only. "
+            "Does not read file contents or enter subdirectories."
+        )
+        
     try:
         answer = input("Allow this file operation? [y/N]: ")
     except EOFError:
