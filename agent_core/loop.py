@@ -3,7 +3,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-from agent_core.model_client import call_model, DEFAULT_MODEL
+from agent_core.model_client import call_model, DEFAULT_MODEL, ModelResponseError
 from agent_core.tools.registry import get_tool_function, TOOL_REGISTRY
 
 def run_agent(
@@ -94,7 +94,17 @@ def run_agent(
         if cancel_requested():
             return "Task cancelled."
 
-        reply = call_model(conversation_history, model=model, allowed_tools=permitted_tools)
+        try:
+            reply = call_model(
+                conversation_history,
+                model=model,
+                allowed_tools=permitted_tools
+            )
+        # For token limits
+        except ModelResponseError as error:
+            if cancel_requested():
+                return "Task cancelled."
+            return str(error)
 
         # Check for cancellation request
         if cancel_requested():

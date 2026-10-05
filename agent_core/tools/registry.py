@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 
-from agent_core.tools.files import read_file, write_file
+from agent_core.tools.files import read_file_page, write_file, MAX_READ_CHARS
 from agent_core.tools.shell import run_shell
 from agent_core.tools.directories import list_directory
 from agent_core.tools.search import search_files
@@ -11,12 +11,17 @@ from agent_core.tools.search import search_files
 TOOL_REGISTRY = {
     "read_file": {
         # Keep the callable locally; only the schema is sent to the model.
-        "handler": read_file,
+        "handler": read_file_page,
         "schema": {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read the contents of a UTF-8 text file.",
+                "description": (
+                    "Read a bounded page of a UTF-8 file. Offsets count characters. "
+                    "Returns JSON with path, offset, content, truncated, and next_offset. "
+                    "If truncated is true, continue with next_offset to read more. "
+                    "Each external read requires approval."
+                ),
                 "strict": True,
                 "parameters": {
                     "type": "object",
@@ -25,12 +30,28 @@ TOOL_REGISTRY = {
                             "type": "string",
                             "description": (
                                 "File path, either absolute or relative to the workspace directory. "
-                                "Access outside the workspace requires explicit user approval "
-                                "for this operation. Access is denied if approval is unavailable."
+                                "Access outside the workspace requires approval for each read."
                             ),
                         },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": (
+                                "Character offset. Use 0 to start, "
+                                "then the returned next_offset."
+                            ),
+                        },
+                        "max_chars": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": MAX_READ_CHARS,
+                            "description": (
+                                "Maximum content characters to return. "
+                                "Use 8000 for a normal page."
+                            ),
+                        }
                     },
-                    "required": ["path"],
+                    "required": ["path", "offset", "max_chars"],
                     "additionalProperties": False,
                 },
             },
@@ -79,7 +100,10 @@ TOOL_REGISTRY = {
                 "description": (
                     "Request user approval for a shell command, then execute it only "
                     "if approved. Each call requires a separate approval decision. "
-                    "Returns the exit code, standard output and standard error. "
+                    "Returns the exit code and previews of standard output and standard error. "
+                    "Long output includes saved-log metadata. Use read_file with the log path "
+                    "and next_offset to retrieve more, subject to file approval. "
+                    "If the log is truncated, output beyond stored_chars was not retained. "
                     "Commands time out after 60 seconds. "
                     "If denied, report the denial. Do not retry or bypass it on your own. "
                     "A later explicit user request may initiate a new approval request."
