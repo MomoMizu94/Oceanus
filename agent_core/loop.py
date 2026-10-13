@@ -20,6 +20,7 @@ def run_agent(
         allowed_tools: set[str] | None = None,
         on_tool_status: Callable[[str, str], None] | None = None,
         on_search_approval: Callable[[str, str, str], bool] | None = None,
+        on_edit_approval: Callable[[str, str], bool] | None = None
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -49,6 +50,13 @@ def run_agent(
             return False
 
         decision = on_search_approval(path, query, pattern)
+        return decision is True and not cancel_requested()
+
+    def request_edit_approval(path: str, diff: str) -> bool:
+        if cancel_requested() or on_edit_approval is None:
+            return False
+
+        decision = on_edit_approval(path, diff)
         return decision is True and not cancel_requested()
 
     if max_turns < 1:
@@ -131,7 +139,8 @@ def run_agent(
             is_file_tool = tool_name in ("read_file",
                                          "write_file",
                                          "list_directory",
-                                         "search_files")
+                                         "search_files",
+                                         "edit_file")
             file_result = None
 
             if cancel_requested():
@@ -154,6 +163,14 @@ def run_agent(
                         result = tool_function(**arguments, on_approval=on_approval)
                     elif tool_name == "search_files":
                         result = tool_function(**arguments, workspace_root=workspace_root, on_search_approval=request_search_approval)
+                    elif tool_name == "edit_file":
+                        result = tool_function(
+                            **arguments,
+                            workspace_root=workspace_root,
+                            on_file_approval=request_file_approval,
+                            on_edit_approval=request_edit_approval,
+                            should_cancel=cancel_requested
+                        )
                     elif is_file_tool:
                         result = tool_function(**arguments, workspace_root=workspace_root, on_file_approval=request_file_approval)
                     else:

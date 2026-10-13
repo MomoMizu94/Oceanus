@@ -16,6 +16,7 @@ from agent_core.memory.session import load_session, save_session
 from agent_core.session_picker import SessionPicker
 from agent_core.model_client import DEFAULT_MODEL
 from agent_core.model_discovery import list_ollama_models
+from agent_core.edit_approval_screen import EditApprovalScreen
 
 
 class OceanusApp(App):
@@ -177,6 +178,10 @@ class OceanusApp(App):
     def request_search_approval(self, path: str, query: str, pattern: str) -> bool:
         return self.call_from_thread(self.show_search_approval, path, query, pattern)
 
+    def request_edit_approval(self, path: str, diff: str) -> bool:
+        # Schedules show_shell_approval to the UI thread
+        return self.call_from_thread(self.show_edit_approval, path, diff)
+
     def on_select_changed(self, event: Select.Changed) -> None:
         """ Called when model selection changes. Updates model & header.
          Busy check rejects selection that was triggered after task start. """
@@ -215,6 +220,14 @@ class OceanusApp(App):
 
         decision = await self.push_screen_wait(FileApprovalScreen("search", path, query=query, pattern=pattern))
         return decision is True and not self.cancel_event.is_set()
+
+    async def show_edit_approval(self, path: str, diff: str) -> bool:
+        # Avoid openining a dialog after cancellation
+        if self.cancel_event.is_set():
+            return False
+
+        decision = await self.push_screen_wait(EditApprovalScreen(path, diff))
+        return decision is True and not self.cancel_event.is_set()
     
 
     @work(thread=True)
@@ -233,6 +246,7 @@ class OceanusApp(App):
                 should_cancel=self.cancel_event.is_set,
                 on_tool_status=self.report_tool_status,
                 on_search_approval=self.request_search_approval,
+                on_edit_approval=self.request_edit_approval,
             )
         except Exception as error:
             self.call_from_thread(self.finish_task, f"Error: {type(error).__name__}: {error}", None)
@@ -352,7 +366,7 @@ class OceanusApp(App):
         self.cancel_event.set()
         self.sub_title = f"{self.model} | Cancelling..."
 
-        if isinstance(self.screen, (ShellApprovalScreen, FileApprovalScreen)):
+        if isinstance(self.screen, (ShellApprovalScreen, FileApprovalScreen, EditApprovalScreen)):
             self.screen.dismiss(False)
 
         self.notify("Cancellation requested. Waiting for the current operation to finish.")

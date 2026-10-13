@@ -9,6 +9,7 @@ from agent_core.memory.session import load_session, save_session
 from agent_core.guardrails import approve_shell, approve_file
 from agent_core.tools.registry import TOOL_REGISTRY
 from agent_core.search_approval import approve_search
+from agent_core.edit_approval import approve_edit
 
 
 def print_tool_status(tool_name: str, status: str) -> None:
@@ -105,6 +106,7 @@ def main() -> None:
         allowed_tools=allowed_tools,
         on_tool_status=print_tool_status,
         on_search_approval=approve_search,
+        on_edit_approval=approve_edit,
     )
     print("Agent:", answer)
 

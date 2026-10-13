@@ -6,6 +6,7 @@ from agent_core.tools.files import read_file_page, write_file, MAX_READ_CHARS
 from agent_core.tools.shell import run_shell
 from agent_core.tools.directories import list_directory
 from agent_core.tools.search import search_files
+from agent_core.tools.edits import edit_file
 
 
 TOOL_REGISTRY = {
@@ -104,7 +105,9 @@ TOOL_REGISTRY = {
                     "Long output includes saved-log metadata. Use read_file with the log path "
                     "and next_offset to retrieve more, subject to file approval. "
                     "If the log is truncated, output beyond stored_chars was not retained. "
-                    "Commands time out after 60 seconds. "
+                    "Runs non-interactively on POSIX systems. Commands time out after 60 seconds. "
+                    "Timeout results include captured partial output. "
+                    "capture_incomplete means output collection stopped before EOF. "
                     "If denied, report the denial. Do not retry or bypass it on your own. "
                     "A later explicit user request may initiate a new approval request."
                 ),
@@ -203,6 +206,50 @@ TOOL_REGISTRY = {
                         },
                     },
                     "required": ["path", "query", "pattern"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    },
+    "edit_file": {
+        "handler": edit_file,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": (
+                    "Replace one exact, unique text match in an existing UTF-8 file. "
+                    "Read the relevant text first. Requires approval of the complete diff. "
+                    "Rejects missing or ambiguous matches, stale contents, oversized files "
+                    "or diffs, and unsupported file metadata. External access requires "
+                    "separate read and write approval. Returns confirmation only after writing."
+                ),
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": (
+                                "Existing file path, absolute or relative to the workspace."
+                            ),
+                        },
+                        "old_text": {
+                            "type": "string",
+                            "description": (
+                                "Nonempty exact text to replace. "
+                                "Include enough context for one unique match."
+                            ),
+                        },
+                        "new_text": {
+                            "type": "string",
+                            "description": (
+                                "Replacement text. Must differ from old_text. "
+                                "Empty text deletes the match."
+                            ),
+                        },
+                    },
+                    "required": ["path", "old_text", "new_text"],
                     "additionalProperties": False,
                 },
             },

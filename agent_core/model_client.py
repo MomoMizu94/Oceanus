@@ -17,6 +17,46 @@ class ModelOutputTruncatedError(ModelResponseError):
     """ Provider reported an incomplete response at its output limit """
 
 
+DEFAULT_MAX_REQUEST_CHARS = 512_000
+
+
+class RequestBudgetExceededError(ModelResponseError):
+    """ Next request exceeds Oceanus' configured input-size budget """
+
+
+def get_max_request_chars() -> int:
+    raw_value = os.environ.get("OCEANUS_MAX_REQUEST_CHARS", str(DEFAULT_MAX_REQUEST_CHARS))
+    error_message = "OCEANUS_MAX_REQUEST_CHARS must be a positive integer"
+
+    try:
+        limit = int(raw_value)
+    except ValueError:
+        raise ValueError(error_message) from None
+
+    if limit < 1:
+        raise ValueError(error_message)
+    return limit
+
+def check_request_budget(conversation_history, tools) -> None:
+    """ Count serialized input characters without trimming history """
+    limit = get_max_request_chars()
+    payload = {
+        "messages": conversation_history,
+        "tools": tools or None
+    }
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+    size = sum(len(chunk) for chunk in encoder.iterencode(payload))
+
+    if size > limit:
+        raise RequestBudgetExceededError(
+            f"Stopped: request input contains {size:,} serialized characters, "
+            f"exceeding OCEANUS_MAX_REQUEST_CHARS={limit:,}. "
+            "The next model request was not sent. History was not trimmed. "
+            "Save this session and start a new one, or raise the input-size budget. "
+            "The model's own context limit still applies. "
+            "Earlier tool actions, if any, were not undone."
+        )
+
 def get_max_completion_tokens() -> int:
     """ Read and validate output-token limit for one model request """
     raw_value = os.environ.get(
@@ -46,6 +86,8 @@ def call_completion(
     """ Make one model request and return full response """
     """ Preserve Ollama's native stop reason """
     tools = get_tool_schemas(allowed_tools) if use_tools else []
+    check_request_budget(conversation_history, tools)
+    
     is_ollama = model.startswith("ollama_chat/")
     native_reason = None
 
