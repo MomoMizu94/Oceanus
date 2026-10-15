@@ -176,7 +176,8 @@ TOOL_REGISTRY = {
                 "description": (
                     "Search literal, case-sensitive text in immediate UTF-8 files. "
                     "Filter filenames with pattern. No recursion or child symlink following. "
-                    "Includes matching hidden files; does not apply .gitignore. "
+                    "Searches matching hidden files but skips protected files. "
+                    "Protected files appear in skipped; .gitignore is not applied. "
                     "External searches require approval for each directory, query, and pattern. "
                     "Returns JSON with matches, skipped files, and truncation flags. "
                     "Do not claim a complete search when files were skipped or results truncated."

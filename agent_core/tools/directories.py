@@ -12,7 +12,8 @@ def list_directory(
         *,
         workspace_root: Path,
         max_entries: int = 200,
-        on_file_approval: Callable[[str, str], bool] | None = None
+        on_file_approval: Callable[[str, str], bool] | None = None,
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None
 ) -> str:
     """ List immediate children without reading files or following symlinks """
     # Limits
@@ -24,7 +25,8 @@ def list_directory(
         path,
         workspace_root,
         operation="list",
-        on_file_approval=on_file_approval
+        on_file_approval=on_file_approval,
+        on_sensitive_approval=on_sensitive_approval
     )
 
     entries = []

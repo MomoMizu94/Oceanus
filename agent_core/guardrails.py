@@ -1,6 +1,8 @@
 from pathlib import Path
 from collections.abc import Callable
 
+from agent_core.sensitive_paths import sensitive_path_reason
+
 
 def approve_shell(command: str, working_directory: str) -> bool:
     """ Approve command only when user enters 'y' """
@@ -43,26 +45,39 @@ def approve_file(operation: str, path: str) -> bool:
 
 def resolve_workspace_path(
         path: str,
-        workspace_root: Path, *,
+        workspace_root: Path,
+        *,
         operation: str = "read",
-        on_file_approval: Callable[[str, str], bool] | None = None
+        on_file_approval: Callable[[str, str], bool] | None = None,
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None
         ) -> Path:
-    """ Resolve a file path and require access approval outside the workspace. """
+    """ Check sensitive-path approval & external access before returning a path """
     root = workspace_root.resolve()
-    target = Path(path).expanduser()
+    requested = Path(path).expanduser()
 
-    if not target.is_absolute():
-        target = root / target
+    if not requested.is_absolute():
+        requested = root / requested
 
-    target = target.resolve()
+    target = requested.resolve()
+    reason = sensitive_path_reason(requested) or sensitive_path_reason(target)
+
+    def check_path_unchanged() -> None:
+        if requested.resolve() != target or target.resolve() != target:
+            raise PermissionError("Path changed while awaiting approval. Request access again!")
+
+    if reason is not None:
+        if on_sensitive_approval is None:
+            raise PermissionError(f"Sensitive {operation} requires approval: {target}")
+
+        if on_sensitive_approval(operation, str(target), reason) is not True:
+            raise PermissionError(f"Sensitive {operation} denied: {target}")
+        check_path_unchanged()
 
     if not target.is_relative_to(root):
         if on_file_approval is None:
             raise PermissionError(f"External {operation} requires approval: {target}")
         if on_file_approval(operation, str(target)) is not True:
             raise PermissionError(f"External {operation} denied: {target}")
-        # symlink catching while approval is pending
-        if target.resolve() != target:
-            raise PermissionError("Path changed while awaiting approval. Request access again.")
+        check_path_unchanged()
 
     return target

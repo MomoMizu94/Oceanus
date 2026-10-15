@@ -6,6 +6,7 @@ from itertools import islice
 from pathlib import Path
 
 from agent_core.guardrails import resolve_workspace_path
+from agent_core.sensitive_paths import sensitive_path_reason
 
 
 MAX_ENTRIES = 200
@@ -72,6 +73,13 @@ def search_files(
                 continue
 
             if not child.is_file(follow_symlinks=False):
+                continue
+
+            if sensitive_path_reason(Path(child.path)) is not None:
+                result["skipped"].append({
+                    "name": child.name,
+                    "reason": "sensitive file"
+                })
                 continue
 
             try:

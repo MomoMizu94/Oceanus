@@ -74,10 +74,16 @@ def build_edit_preview(original: str, updated: str, *, max_chars: int = MAX_DIFF
         "truncated": len(preview) > max_chars
     }
 
-def read_edit_snapshot(path: str, *, workspace_root: Path, on_file_approval: Callable[[str, str], bool] | None = None) -> dict:
+def read_edit_snapshot(
+        path: str,
+        *,
+        workspace_root: Path,
+        on_file_approval: Callable[[str, str], bool] | None = None,
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None
+) -> dict:
     """ Read a bounded UTF-8 snapshot without changing the file """
     # Resolve path & approval request
-    file_path = resolve_workspace_path(path, workspace_root, operation="read", on_file_approval=on_file_approval)
+    file_path = resolve_workspace_path(path, workspace_root, operation="read", on_file_approval=on_file_approval, on_sensitive_approval=on_sensitive_approval)
 
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
     # Open file for reading
@@ -107,10 +113,18 @@ def read_edit_snapshot(path: str, *, workspace_root: Path, on_file_approval: Cal
         "sha256": hashlib.sha256(raw).hexdigest(),
     }
 
-def prepare_edit(path: str, old_text: str, new_text: str, *, workspace_root: Path, on_file_approval: Callable[[str, str], bool] | None = None ) -> dict:
+def prepare_edit(
+        path: str,
+        old_text: str,
+        new_text: str,
+        *,
+        workspace_root: Path,
+        on_file_approval: Callable[[str, str], bool] | None = None,
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None
+) -> dict:
     """ Prepare a complete edit for review without writing to disk """
     # Read original file through approval checks
-    snapshot = read_edit_snapshot(path, workspace_root=workspace_root, on_file_approval=on_file_approval)
+    snapshot = read_edit_snapshot(path, workspace_root=workspace_root, on_file_approval=on_file_approval, on_sensitive_approval=on_sensitive_approval)
     # Replace the requested text in memory
     updated = replace_once(snapshot["content"], old_text, new_text)
 
@@ -126,17 +140,37 @@ def prepare_edit(path: str, old_text: str, new_text: str, *, workspace_root: Pat
         raise ValueError("Edit diff too large to review; make a smaller edit")
 
     # Return proposed content, diff and OG fingerprint
-    return {
+    proposal = {
         "path": snapshot["path"],
         "original_sha256": snapshot["sha256"],
         "updated_content": updated,
         "diff": preview["diff"]
     }
 
-def verify_edit_snapshot(proposal: dict, *, workspace_root: Path, on_file_approval: Callable[[str, str], bool] | None = None) -> dict:
-    """ Check internal edit proposal against current file content """
+    requested = Path(path).expanduser()
+    if not requested.is_absolute():
+        requested = workspace_root.resolve() / requested
+
+    if str(requested) != snapshot["path"]:
+        proposal["access_path"] = str(requested)
+
+    return proposal
+
+def verify_edit_snapshot(
+        proposal: dict,
+        *,
+        workspace_root: Path,
+        on_file_approval: Callable[[str, str], bool] | None = None,
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None
+) -> dict:
+    """ Check an edit proposal against current file contents """
     # Rechecks proposal
-    current = read_edit_snapshot(proposal["path"], workspace_root=workspace_root, on_file_approval=on_file_approval)
+    current = read_edit_snapshot(
+        proposal.get("access_path", proposal["path"]), # Acess path if present. Otherwise proposal path
+        workspace_root=workspace_root,
+        on_file_approval=on_file_approval,
+        on_sensitive_approval=on_sensitive_approval
+    )
 
     # Checks path & compares sha256 fingerprints of current contents and one returned by prepare_edit
     if current["path"] != proposal["path"]:
@@ -152,7 +186,8 @@ def apply_edit(
         workspace_root: Path,
         on_file_approval: Callable[[str, str], bool] | None = None,
         on_edit_approval: Callable[[str, str], bool] | None = None,
-        should_cancel: Callable[[], bool] | None = None
+        should_cancel: Callable[[], bool] | None = None,
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None
         ) -> str:
     """ Apply an internal proposal after diff approval and a fresh file check """
 
@@ -166,7 +201,7 @@ def apply_edit(
         raise PermissionError("Edit approval is required")
 
     proposal = dict(proposal)
-    current = verify_edit_snapshot(proposal, workspace_root=workspace_root, on_file_approval=on_file_approval)
+    current = verify_edit_snapshot(proposal, workspace_root=workspace_root, on_file_approval=on_file_approval, on_sensitive_approval=on_sensitive_approval)
 
     updated = proposal["updated_content"]
     if not isinstance(updated, str):
@@ -208,16 +243,20 @@ def apply_edit(
     check_cancelled()
 
     approved = resolve_workspace_path(
-        str(target),
+        proposal.get("access_path", str(target)),
         workspace_root,
         operation="write",
         on_file_approval=on_file_approval,
+        on_sensitive_approval=on_sensitive_approval,
     )
     if approved != target:
         raise ValueError("File path changed; prepare a new edit")
 
     # Reuse read access granted earlier
     def approved_read(operation, path):
+        return operation == "read" and path == str(target)
+
+    def approved_sensitive_read(operation, path, reason):
         return operation == "read" and path == str(target)
 
     def recheck():
@@ -227,6 +266,7 @@ def apply_edit(
             proposal,
             workspace_root=workspace_root,
             on_file_approval=approved_read,
+            on_sensitive_approval=approved_sensitive_read,
         )
         if file_state(target.lstat()) != before:
             raise ValueError("File changed. Prepare and review a new edit")
@@ -271,7 +311,8 @@ def edit_file(
         workspace_root: Path,
         on_file_approval: Callable[[str, str], bool] | None = None,
         on_edit_approval: Callable[[str, str], bool] | None = None,
-        should_cancel: Callable[[], bool] | None =  None
+        should_cancel: Callable[[], bool] | None =  None,
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
 ) -> str:
     """ Prepare and apply one exact replacement with fresh diff approval """
     if should_cancel is not None and should_cancel():
@@ -280,12 +321,37 @@ def edit_file(
     if on_edit_approval is None:
         raise PermissionError("Edit approval is required!")
 
+    approved_sensitive_reads = set()
+
+    def sensitive_approval(operation, resolved_path, reason):
+        """ Remembers which sensitive reads have been approved by user """
+        if should_cancel is not None and should_cancel():
+            return False
+
+        grant = (resolved_path, reason)
+        if operation == "read" and grant in approved_sensitive_reads:
+            return True
+
+        if on_sensitive_approval is None:
+            return False
+
+        decision = on_sensitive_approval(operation, resolved_path, reason)
+        if decision is not True:
+            return False
+        if should_cancel is not None and should_cancel():
+            return False
+
+        if operation == "read":
+            approved_sensitive_reads.add(grant)
+        return True
+
     proposal = prepare_edit(
         path,
         old_text,
         new_text,
         workspace_root=workspace_root,
-        on_file_approval=on_file_approval
+        on_file_approval=on_file_approval,
+        on_sensitive_approval=sensitive_approval
     )
 
     def file_approval(operation, resolved_path):
@@ -306,5 +372,6 @@ def edit_file(
         workspace_root=workspace_root,
         on_file_approval=file_approval,
         on_edit_approval=on_edit_approval,
-        should_cancel=should_cancel
+        should_cancel=should_cancel,
+        on_sensitive_approval=sensitive_approval
     )

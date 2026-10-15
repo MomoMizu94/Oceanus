@@ -20,7 +20,8 @@ def run_agent(
         allowed_tools: set[str] | None = None,
         on_tool_status: Callable[[str, str], None] | None = None,
         on_search_approval: Callable[[str, str, str], bool] | None = None,
-        on_edit_approval: Callable[[str, str], bool] | None = None
+        on_edit_approval: Callable[[str, str], bool] | None = None,
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -57,6 +58,13 @@ def run_agent(
             return False
 
         decision = on_edit_approval(path, diff)
+        return decision is True and not cancel_requested()
+
+    def request_sensitive_approval(opeation: str, path: str, reason: str) -> bool:
+        if cancel_requested() or on_sensitive_approval is None:
+            return False
+
+        decision = on_sensitive_approval(opeation, path, reason)
         return decision is True and not cancel_requested()
 
     if max_turns < 1:
@@ -169,10 +177,16 @@ def run_agent(
                             workspace_root=workspace_root,
                             on_file_approval=request_file_approval,
                             on_edit_approval=request_edit_approval,
-                            should_cancel=cancel_requested
+                            should_cancel=cancel_requested,
+                            on_sensitive_approval=request_sensitive_approval,
                         )
                     elif is_file_tool:
-                        result = tool_function(**arguments, workspace_root=workspace_root, on_file_approval=request_file_approval)
+                        result = tool_function(
+                            **arguments,
+                            workspace_root=workspace_root,
+                            on_file_approval=request_file_approval,
+                            on_sensitive_approval=request_sensitive_approval
+                        )
                     else:
                         result = tool_function(**arguments)
 
