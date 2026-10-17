@@ -186,6 +186,9 @@ class OceanusApp(App):
     def request_sensitive_approval(self, operation: str, path: str, reason: str) -> bool:
         return self.call_from_thread(self.show_sensitive_approval, operation, path, reason)
 
+    def request_discovery_approval(self, path: str, pattern: str) -> bool:
+        return self.call_from_thread(self.show_discovery_approval, path, pattern)
+
     def on_select_changed(self, event: Select.Changed) -> None:
         """ Called when model selection changes. Updates model & header.
          Busy check rejects selection that was triggered after task start. """
@@ -240,6 +243,21 @@ class OceanusApp(App):
 
         decision = await self.push_screen_wait(SensitiveApprovalScreen(operation, path, reason))
         return decision is True and not self.cancel_event.is_set()
+
+    async def show_discovery_approval(self, path: str, pattern: str) -> bool:
+        if self.cancel_event.is_set():
+            return False
+
+        screen = FileApprovalScreen("discovery", path, pattern=pattern)
+        decision = await self.push_screen_wait(screen)
+
+        if decision is not True:
+            return False
+
+        if self.cancel_event.is_set():
+            return False
+
+        return True
     
 
     @work(thread=True)
@@ -260,6 +278,7 @@ class OceanusApp(App):
                 on_search_approval=self.request_search_approval,
                 on_edit_approval=self.request_edit_approval,
                 on_sensitive_approval=self.request_sensitive_approval,
+                on_discovery_approval=self.request_discovery_approval,
             )
         except Exception as error:
             self.call_from_thread(self.finish_task, f"Error: {type(error).__name__}: {error}", None)

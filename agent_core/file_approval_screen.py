@@ -4,6 +4,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
 from agent_core.search_approval import describe_search
+from agent_core.filename_approval import describe_discovery
 
 
 class FileApprovalScreen(ModalScreen[bool]):
@@ -49,11 +50,14 @@ class FileApprovalScreen(ModalScreen[bool]):
         """ Approval screen initialization """
         super().__init__()
 
-        if operation not in ("read", "write", "list", "search"):
-            raise ValueError("Expected a read, write, list or search operation")
+        if operation not in ("read", "write", "list", "search", "discovery"):
+            raise ValueError("Expected a read, write, list, search or discovery operation")
 
         if operation == "search" and (query is None or pattern is None):
             raise ValueError("Search approval requires a query and filename pattern")
+
+        if operation == "discovery" and pattern is None:
+            raise ValueError("Filename discovery approval requires a pattern")
         
         self.operation = operation
         self.path = path
@@ -64,15 +68,16 @@ class FileApprovalScreen(ModalScreen[bool]):
         with Vertical(id="file-dialog"):
             yield Static("Allow this external filesystem operation?")
             with VerticalScroll(id="file-details"):
-                details = (
-                    describe_search(
+                if self.operation == "search":
+                    details = describe_search(
                         self.path,
                         self.search_query,
                         self.filename_pattern
                     )
-                    if self.operation == "search"
-                    else f"Operation: {self.operation}\nResolved path:\n{self.path}"
-                )
+                elif self.operation == "discovery":
+                    details = describe_discovery(self.path, self.filename_pattern)
+                else:
+                    details = f"Operation: {self.operation}\nResolved path:\n{self.path}"
                 yield Static(details, id="file-info", markup=False)
                 if self.operation == "list":
                     yield Static(

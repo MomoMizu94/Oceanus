@@ -7,6 +7,7 @@ from agent_core.tools.shell import run_shell
 from agent_core.tools.directories import list_directory
 from agent_core.tools.search import search_files
 from agent_core.tools.edits import edit_file
+from agent_core.tools.discovery import find_files
 
 
 TOOL_REGISTRY = {
@@ -251,6 +252,49 @@ TOOL_REGISTRY = {
                         },
                     },
                     "required": ["path", "old_text", "new_text"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    },
+    "find_files": {
+        "handler": find_files,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "find_files",
+                "description": (
+                    "Find filenames recursively without reading file contents. "
+                    "Match a case-sensitive pattern against each basename. "
+                    "Returns JSON with path, pattern, matches, skipped, and truncated. "
+                    "Matches are sorted paths relative to the search root. "
+                    "Skips child symlinks, protected paths, and generated directories. "
+                    ".gitignore is not applied. Depth, scan, and result limits apply. "
+                    "External roots require dedicated approval for each recursive filename search. "
+                    "Access is denied when approval is unavailable. Protected roots are rejected. "
+                    "Report skipped paths and truncation when describing coverage."
+                ),
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": (
+                                "Search root, absolute or relative to the workspace. "
+                                "Use '.' for the workspace. External roots require approval."
+                            ),
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": (
+                                "Filename pattern such as *.py or *test*. "
+                                "Use * for all names. Use 1 to 100 characters "
+                                "without path separators or line breaks."
+                            ),
+                        },
+                    },
+                    "required": ["path", "pattern"],
                     "additionalProperties": False,
                 },
             },

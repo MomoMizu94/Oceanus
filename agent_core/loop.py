@@ -21,7 +21,8 @@ def run_agent(
         on_tool_status: Callable[[str, str], None] | None = None,
         on_search_approval: Callable[[str, str, str], bool] | None = None,
         on_edit_approval: Callable[[str, str], bool] | None = None,
-        on_sensitive_approval: Callable[[str, str, str], bool] | None = None
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
+        on_discovery_approval: Callable[[str, str], bool] | None = None,
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -66,6 +67,19 @@ def run_agent(
 
         decision = on_sensitive_approval(opeation, path, reason)
         return decision is True and not cancel_requested()
+
+    def request_discovery_approval(path: str, pattern: str) -> bool:
+        if cancel_requested() or on_discovery_approval is None:
+            return False
+
+        decision = on_discovery_approval(path, pattern)
+        if decision is not True:
+            return False
+
+        if cancel_requested():
+            return False
+
+        return True
 
     if max_turns < 1:
         raise ValueError ("max_turns must be at least 1")
@@ -148,7 +162,8 @@ def run_agent(
                                          "write_file",
                                          "list_directory",
                                          "search_files",
-                                         "edit_file")
+                                         "edit_file",
+                                         "find_files",)
             file_result = None
 
             if cancel_requested():
@@ -169,6 +184,8 @@ def run_agent(
                     
                     if tool_name == "run_shell":
                         result = tool_function(**arguments, on_approval=on_approval)
+                    elif tool_name == "find_files":
+                        result = tool_function(**arguments, workspace_root=workspace_root, on_discovery_approval=request_discovery_approval)
                     elif tool_name == "search_files":
                         result = tool_function(**arguments, workspace_root=workspace_root, on_search_approval=request_search_approval)
                     elif tool_name == "edit_file":
