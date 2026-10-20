@@ -2,7 +2,13 @@
 
 from collections.abc import Callable
 
-from agent_core.tools.files import read_file_page, write_file, MAX_READ_CHARS
+from agent_core.tools.files import (
+    read_file_page,
+    write_file,
+    MAX_READ_CHARS,
+    read_file_lines,
+    MAX_READ_LINES
+)
 from agent_core.tools.shell import run_shell
 from agent_core.tools.directories import list_directory
 from agent_core.tools.search import search_files
@@ -54,6 +60,54 @@ TOOL_REGISTRY = {
                         }
                     },
                     "required": ["path", "offset", "max_chars"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    },
+    "read_file_lines": {
+        "handler": read_file_lines,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "read_file_lines",
+                "description": (
+                    "Read an inclusive, one-based range of lines from a UTF-8 file. "
+                    f"At most {MAX_READ_LINES} lines and {MAX_READ_CHARS} content characters. "
+                    "Returns JSON with path, start_line, actual end_line, lines, truncated, "
+                    "and next_line. Each line has number and exact text with original endings. "
+                    "truncated means more file content follows the returned range. "
+                    "Oversized lines or ranges fail without returning partial lines; "
+                    "use a smaller range or read_file character paging. "
+                    "Each external or sensitive read requires approval."
+                ),
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": (
+                                "File path, absolute or relative to the workspace."
+                            ),
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": (
+                                "First line to include. Line numbers start at 1."
+                            ),
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": (
+                                "Last line to include, at least start_line. "
+                                f"Request at most {MAX_READ_LINES} lines."
+                            ),
+                        },
+                    },
+                    "required": ["path", "start_line", "end_line"],
                     "additionalProperties": False,
                 },
             },

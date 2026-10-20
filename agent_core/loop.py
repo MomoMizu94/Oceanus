@@ -159,6 +159,7 @@ def run_agent(
             # Translate requests into function calls
             tool_name = tool_call.function.name
             is_file_tool = tool_name in ("read_file",
+                                         "read_file_lines",
                                          "write_file",
                                          "list_directory",
                                          "search_files",
