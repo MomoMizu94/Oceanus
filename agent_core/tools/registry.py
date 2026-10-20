@@ -175,13 +175,15 @@ TOOL_REGISTRY = {
             "function": {
                 "name": "search_files",
                 "description": (
-                    "Search literal, case-sensitive text in immediate UTF-8 files. "
-                    "Filter filenames with pattern. No recursion or child symlink following. "
-                    "Searches matching hidden files but skips protected files. "
-                    "Protected files appear in skipped; .gitignore is not applied. "
-                    "External searches require approval for each directory, query, and pattern. "
-                    "Returns JSON with matches, skipped files, and truncation flags. "
-                    "Do not claim a complete search when files were skipped or results truncated."
+                    "Search literal, case-sensitive text recursively in UTF-8 files. "
+                    "Match pattern against each basename; do not follow child symlinks. "
+                    "Skips protected paths and generated directories; .gitignore is not applied. "
+                    "Limits include depth, total entries, per-file bytes, matches, and skips. "
+                    "Each external directory-tree search requires approval "
+                    "for its root, query, and pattern. "
+                    "Returns JSON with matches, skipped entries, and truncation flags. "
+                    "Match paths are absolute; skipped names are relative to the search root. "
+                    "Report skipped entries and truncation when describing coverage."
                 ),
                 "strict": True,
                 "parameters": {
@@ -202,8 +204,9 @@ TOOL_REGISTRY = {
                         "pattern": {
                             "type": "string",
                             "description": (
-                                "Filename pattern such as *.py or *.txt. "
-                                "Use * for all names."
+                                "Case-sensitive basename pattern such as *.py or *.txt. "
+                                "Use * for all names. Use 1 to 100 characters "
+                                "without path separators or line breaks."
                             ),
                         },
                     },
