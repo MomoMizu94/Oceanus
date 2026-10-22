@@ -18,6 +18,7 @@ from agent_core.model_client import DEFAULT_MODEL
 from agent_core.model_discovery import list_ollama_models
 from agent_core.edit_approval_screen import EditApprovalScreen
 from agent_core.sensitive_approval_screen import SensitiveApprovalScreen
+from agent_core.instructions import build_system_prompt
 
 
 class OceanusApp(App):
@@ -264,10 +265,11 @@ class OceanusApp(App):
     def run_task(self, task: str, history: list[dict], model: str) -> None:
         """ Runs the prompt. Executed in a background thread. """
         try:
+            coding_prompt = build_system_prompt(self.coding_prompt)
             answer = run_agent(
                 task,
                 model=model,
-                system_prompt=self.coding_prompt,
+                system_prompt=coding_prompt,
                 conversation_history=history,
                 on_progress=self.report_progress,
                 on_approval=self.request_approval,

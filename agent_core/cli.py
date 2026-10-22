@@ -12,6 +12,7 @@ from agent_core.search_approval import approve_search
 from agent_core.edit_approval import approve_edit
 from agent_core.sensitive_approval import approve_sensitive_access
 from agent_core.filename_approval import approve_discovery
+from agent_core.instructions import build_system_prompt
 
 
 def print_tool_status(tool_name: str, status: str) -> None:
@@ -88,9 +89,15 @@ def main() -> None:
             parser.error(f"Couldn't load the session: {error}")
 
     # Prompt laoding
-    coding_prompt = (
-        files("agents.coding").joinpath("system_prompt.md").read_text(encoding="utf-8")
-    )
+    try:
+        # Built-in instructions
+        base_prompt = (
+            files("agents.coding").joinpath("system_prompt.md").read_text(encoding="utf-8")
+        )
+        # .md files get built into the prompt
+        coding_prompt = build_system_prompt(base_prompt)
+    except (OSError, ValueError) as error:
+        parser.error(f"Could not load instructions: {error}")
 
     print("Model: ", arguments.model)
 
