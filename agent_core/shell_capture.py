@@ -6,8 +6,16 @@ import signal
 import subprocess
 import time
 from io import StringIO
+from pathlib import Path
 
 from agent_core.output_store import MAX_OUTPUT_CHARS
+from agent_core.shell_sandbox import (
+    build_sandbox_base_args,
+    build_shell_environment,
+    validate_workspace_root,
+    workspace_mount_args,
+    ShellSandboxError
+)
 
 
 class OutputBuffer:
@@ -66,8 +74,10 @@ def capture_shell(
         max_chars: int = MAX_OUTPUT_CHARS
 ) -> dict:
     """ Collect bounded output from an already approved command on POSIX """
+
+    # Stop on unsupported os
     if os.name != "posix":
-        raise NotImplementedError("Shell capture currently requires POSIX")
+        raise ShellSandboxError("Shell sandboxing currently requires Linux. Command was not started.")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be a positibe finite number")
 
@@ -75,11 +85,26 @@ def capture_shell(
     timed_out = False
     capture_incomplete = False
 
-    with selectors.DefaultSelector() as reader:
+    # Resolce and check the project
+    root = validate_workspace_root(Path(cwd))
+    arguments = build_sandbox_base_args(working_directory=str(root))
+
+    with (
+        workspace_mount_args(root) as workspace,
+        selectors.DefaultSelector() as reader
+    ):
+        arguments.extend(workspace["arguments"])
+        arguments.extend(["--", "/bin/sh", "-c", command])
+
+        # Launch bwrap with a clean env
+        # Python launches bwrap, bwrap creates isolated env
         process = subprocess.Popen(
-            command,
-            shell=True,
-            cwd=cwd,
+            arguments,
+            shell=False,
+            cwd="/",
+            env=build_shell_environment(),
+            # Give brwap only the dir handle
+            pass_fds=workspace["pass_fds"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

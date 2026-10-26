@@ -2,6 +2,7 @@ from pathlib import Path
 from collections.abc import Callable
 
 from agent_core.sensitive_paths import sensitive_path_reason
+from agent_core.shell_sandbox import SHELL_SANDBOX_NOTICE
 
 
 def approve_shell(command: str, working_directory: str) -> bool:
@@ -9,6 +10,8 @@ def approve_shell(command: str, working_directory: str) -> bool:
     print("\nShell command requested:")
     print(command)
     print("Working directory: ", working_directory)
+    # Show permits before asking for a decision
+    print(SHELL_SANDBOX_NOTICE)
 
     try:
         answer = input("Allow this command? [y/N]: ")

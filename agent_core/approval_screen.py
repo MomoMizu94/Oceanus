@@ -3,6 +3,8 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
+from agent_core.shell_sandbox import SHELL_SANDBOX_NOTICE
+
 
 class ShellApprovalScreen(ModalScreen[bool]):
     """ Ask whether one shell command may run """
@@ -53,6 +55,11 @@ class ShellApprovalScreen(ModalScreen[bool]):
         with Vertical(id="shell-dialog"):
             yield Static("Allow this shell command?")
             with VerticalScroll(id="shell-details"):
+                yield Static(
+                    SHELL_SANDBOX_NOTICE,
+                    id="shell-limits",
+                    markup=False
+                )
                 yield Static(
                     f"Working directory:\n{self.working_directory}\n\n"
                     f"Command:\n{self.command}",

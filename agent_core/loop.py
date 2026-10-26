@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent_core.model_client import call_model, DEFAULT_MODEL, ModelResponseError
 from agent_core.tools.registry import get_tool_function, TOOL_REGISTRY
+from agent_core.shell_sandbox import ShellSandboxError
 
 def run_agent(
         task: str,
@@ -208,7 +209,7 @@ def run_agent(
                     else:
                         result = tool_function(**arguments)
 
-                except (ValueError, KeyError, TypeError, OSError) as error:
+                except (ValueError, KeyError, TypeError, OSError, ShellSandboxError) as error:
                     # Report failed tool execution so model can respond
                     result = f"Tool error: {type(error).__name__}: {error}"
                     if is_file_tool:
