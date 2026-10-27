@@ -19,6 +19,7 @@ from agent_core.model_discovery import list_ollama_models
 from agent_core.edit_approval_screen import EditApprovalScreen
 from agent_core.sensitive_approval_screen import SensitiveApprovalScreen
 from agent_core.instructions import build_system_prompt
+from agent_core.web_approval_screen import WebApprovalScreen
 
 
 class OceanusApp(App):
@@ -190,6 +191,9 @@ class OceanusApp(App):
     def request_discovery_approval(self, path: str, pattern: str) -> bool:
         return self.call_from_thread(self.show_discovery_approval, path, pattern)
 
+    def request_web_approval(self, query: str) -> bool:
+        return self.call_from_thread(self.show_web_approval, query)
+
     def on_select_changed(self, event: Select.Changed) -> None:
         """ Called when model selection changes. Updates model & header.
          Busy check rejects selection that was triggered after task start. """
@@ -259,6 +263,21 @@ class OceanusApp(App):
             return False
 
         return True
+
+    async def show_web_approval(self, query: str) -> bool:
+        # Cancellation can arrive before UI receives the request
+        if self.cancel_event.is_set():
+            return False
+
+        decision = await self.push_screen_wait(WebApprovalScreen(query))
+        if decision is not True:
+            return False
+
+        # Cancellation can arrive while user is deciding
+        if self.cancel_event.is_set():
+            return False
+
+        return True
     
 
     @work(thread=True)
@@ -281,6 +300,7 @@ class OceanusApp(App):
                 on_edit_approval=self.request_edit_approval,
                 on_sensitive_approval=self.request_sensitive_approval,
                 on_discovery_approval=self.request_discovery_approval,
+                on_web_approval=self.request_web_approval,
             )
         except Exception as error:
             self.call_from_thread(self.finish_task, f"Error: {type(error).__name__}: {error}", None)
@@ -400,7 +420,7 @@ class OceanusApp(App):
         self.cancel_event.set()
         self.sub_title = f"{self.model} | Cancelling..."
 
-        if isinstance(self.screen, (ShellApprovalScreen, FileApprovalScreen, EditApprovalScreen, SensitiveApprovalScreen)):
+        if isinstance(self.screen, (ShellApprovalScreen, FileApprovalScreen, EditApprovalScreen, SensitiveApprovalScreen, WebApprovalScreen)):
             self.screen.dismiss(False)
 
         self.notify("Cancellation requested. Waiting for the current operation to finish.")

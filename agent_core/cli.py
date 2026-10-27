@@ -13,6 +13,7 @@ from agent_core.edit_approval import approve_edit
 from agent_core.sensitive_approval import approve_sensitive_access
 from agent_core.filename_approval import approve_discovery
 from agent_core.instructions import build_system_prompt
+from agent_core.web_approval import approve_web_search
 
 
 def print_tool_status(tool_name: str, status: str) -> None:
@@ -118,6 +119,7 @@ def main() -> None:
         on_edit_approval=approve_edit,
         on_sensitive_approval=approve_sensitive_access,
         on_discovery_approval=approve_discovery,
+        on_web_approval=approve_web_search,
     )
     print("Agent:", answer)
 

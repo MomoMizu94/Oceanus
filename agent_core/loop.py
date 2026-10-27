@@ -24,6 +24,7 @@ def run_agent(
         on_edit_approval: Callable[[str, str], bool] | None = None,
         on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
         on_discovery_approval: Callable[[str, str], bool] | None = None,
+        on_web_approval: Callable[[str], bool] | None = None
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -77,6 +78,21 @@ def run_agent(
         if decision is not True:
             return False
 
+        if cancel_requested():
+            return False
+
+        return True
+
+    def request_web_approval(query: str) -> bool:
+        # Don't open approval dialog for already cancelled task
+        if cancel_requested() or on_web_approval is None:
+            return False
+
+        decision = on_web_approval(query)
+        if decision is not True:
+            return False
+
+        # Cancellation can arrive while user is deciding
         if cancel_requested():
             return False
 
@@ -166,11 +182,14 @@ def run_agent(
                                          "search_files",
                                          "edit_file",
                                          "find_files",)
+            # Web content can contain errors
+            # Keep operation's status separate from content returned by search
+            uses_structured_result = is_file_tool or tool_name == "web_search"
             file_result = None
 
             if cancel_requested():
                 result = "Tool skipped: task cancelled before execution."
-                if is_file_tool:
+                if uses_structured_result:
                     file_result = {
                         "status": "skipped",
                         "message": result
@@ -186,6 +205,9 @@ def run_agent(
                     
                     if tool_name == "run_shell":
                         result = tool_function(**arguments, on_approval=on_approval)
+                    elif tool_name == "web_search":
+                        # Supply Oceanus' callback
+                        result = tool_function(**arguments, on_web_approval=request_web_approval)
                     elif tool_name == "find_files":
                         result = tool_function(**arguments, workspace_root=workspace_root, on_discovery_approval=request_discovery_approval)
                     elif tool_name == "search_files":
@@ -212,7 +234,7 @@ def run_agent(
                 except (ValueError, KeyError, TypeError, OSError, ShellSandboxError) as error:
                     # Report failed tool execution so model can respond
                     result = f"Tool error: {type(error).__name__}: {error}"
-                    if is_file_tool:
+                    if uses_structured_result:
                         file_result = {
                             "status": "error",
                             "error_type": type(error).__name__,
@@ -221,7 +243,7 @@ def run_agent(
 
                 else:
                     # File operation marked as successful
-                    if is_file_tool:
+                    if uses_structured_result:
                         file_result = {
                             "status": "success",
                             "content": result
