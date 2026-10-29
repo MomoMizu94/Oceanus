@@ -1,5 +1,6 @@
 from textual.app import App, ComposeResult
-from textual.widgets import Footer, Header, Input, RichLog, Select
+from textual.widgets import Footer, Header, Input, Select
+from textual.containers import VerticalScroll
 from textual.binding import Binding
 from textual import work
 from importlib.resources import files
@@ -21,6 +22,7 @@ from agent_core.sensitive_approval_screen import SensitiveApprovalScreen
 from agent_core.instructions import build_system_prompt
 from agent_core.web_approval_screen import WebApprovalScreen
 from agent_core.fetch_approval_screen import FetchApprovalScreen
+from agent_core.conversation_message import ConversationMessage
 
 
 class OceanusApp(App):
@@ -43,8 +45,13 @@ class OceanusApp(App):
 
     #conversation {
         height: 1fr;
-        border: round $primary;
-        padding: 0 1;
+        padding: 1 2;
+        align-horizontal: center;
+    }
+
+    #conversation > ConversationMessage {
+        width: 1fr;
+        max-width: 80;
     }
 
     #task-input {
@@ -85,13 +92,7 @@ class OceanusApp(App):
             id="model-select"
         )
 
-        yield RichLog(
-            id="conversation",
-            wrap=True,
-            min_width=1,
-            markup=False,
-            highlight=False
-        )
+        yield VerticalScroll(id="conversation")
         yield Input(
             placeholder="Type your message and press Enter",
             disabled=True,
@@ -136,8 +137,21 @@ class OceanusApp(App):
         self.sub_title = self.model
         task_input.focus()
 
-    def write_message(self, message: str) -> None:
-        self.query_one("#conversation", RichLog).write(message)
+    def write_message(
+        self,
+        message: str,
+        *,
+        kind: str = "notice",
+        heading: str | None = None,
+    ) -> None:
+        conversation = self.query_one("#conversation", VerticalScroll)
+        follow_output = conversation.is_vertical_scroll_end
+        entry = ConversationMessage(kind, message, heading=heading)
+        conversation.mount(entry)
+
+        # Keep the view still when reading earlier messages
+        if follow_output:
+            conversation.scroll_end(animate=False)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # Runs on Enter key pressed
@@ -151,7 +165,7 @@ class OceanusApp(App):
         # Disables model selection if busy
         self.query_one("#model-select", Select).disabled = True
         self.sub_title = f"{self.model} | Working..."
-        self.write_message(f"You: {task}")
+        self.write_message(task, kind="user")
         
         event.input.clear()
         event.input.disabled = True
@@ -159,16 +173,27 @@ class OceanusApp(App):
         self.run_task(task, self.conversation_history.copy(), self.model)
 
     def report_progress(self, message: str) -> None:
-        """ Progress callback function """
-        self.call_from_thread(self.write_message, message)
+        # The loop adds this prefix to intermediate agent replies
+        if message.startswith("Agent: "):
+            text = message.removeprefix("Agent: ")
+            self.call_from_thread(self.write_message, text, kind="assistant")
+        else:
+            self.call_from_thread(self.write_message, message, kind="status")
 
     def report_tool_result(self, tool_name: str, result: str) -> None:
-        self.call_from_thread(self.write_message, f"Tool result: ({tool_name}):\n{result}")
+        self.call_from_thread(
+            self.write_message,
+            result,
+            kind="tool",
+            heading=f"Tool result: {tool_name}",
+        )
 
     def report_tool_status(self, tool_name: str, status: str) -> None:
         self.call_from_thread(
             self.write_message,
-            f"Tool execution ({tool_name}): {status}"
+            status,
+            kind="status",
+            heading=f"Tool execution: {tool_name}",
         )
 
     def request_file_approval(self, operation: str, path: str) -> bool:
@@ -316,22 +341,24 @@ class OceanusApp(App):
                 on_fetch_approval=self.request_fetch_approval,
             )
         except Exception as error:
-            self.call_from_thread(self.finish_task, f"Error: {type(error).__name__}: {error}", None)
-        else:
             self.call_from_thread(
                 self.finish_task,
-                f"Agent: {answer}",
-                history
+                f"{type(error).__name__}: {error}",
+                None,
             )
+        else:
+            self.call_from_thread(self.finish_task, answer, history)
 
     def finish_task(self, message: str, history: list[dict] | None) -> None:
-        if history is not None:
+        if history is None:
+            kind = "error"
+        else:
             self.conversation_history = history
+            kind = "assistant"
 
-        self.write_message(message)
+        self.write_message(message, kind=kind)
         self.busy = False
         self.sub_title = self.model
-        # Re-enable model selection
         self.query_one("#model-select", Select).disabled = False
 
         task_input = self.query_one("#task-input", Input)
@@ -379,7 +406,6 @@ class OceanusApp(App):
 
         try:
             history = load_session(path)
-
             if not history:
                 raise ValueError("This session is empty!")
         except (OSError, ValueError) as error:
@@ -388,23 +414,18 @@ class OceanusApp(App):
 
         self.conversation_history = history
         self.session_path = path
+        conversation = self.query_one("#conversation", VerticalScroll)
+        conversation.remove_children()
 
-        self.query_one("#conversation", RichLog).clear()
-
-        labels = {
-            "user": "You",
-            "assistant": "Agent",
-            "tool": "Tool result"
-        }
-
+        # Display saved content without changing the model's history
         for message in history:
             role = message.get("role")
             content = message.get("content")
-
             if role in ("user", "assistant", "tool") and isinstance(content, str):
-                self.write_message(f"{labels[role]}: {content}")
+                self.write_message(content, kind=role)
 
         self.write_message(f"Session opened: {path}")
+        conversation.scroll_end(animate=False)
         self.query_one("#task-input", Input).focus()
 
     def action_save_session(self) -> None:
