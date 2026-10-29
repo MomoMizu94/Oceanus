@@ -1,6 +1,6 @@
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Static
+from textual.widgets import Static, Markdown
 
 
 class ConversationMessage(Vertical):
@@ -22,6 +22,10 @@ class ConversationMessage(Vertical):
         padding: 0 1;
         border: none;
         color: #E6EDF3;
+    }
+
+    ConversationMessage Markdown.message-body {
+        padding: 0;
     }
 
     ConversationMessage.user {
@@ -83,8 +87,15 @@ class ConversationMessage(Vertical):
 
 
     def compose(self) -> ComposeResult:
-        # Keep brackets and tool output as text
-        # Heading widget
+        # Heading
         yield Static(self.heading, classes="message-heading", markup=False)
-        # body widget
-        yield Static(self.text, classes="message-body", markup=False)
+
+        if self.has_class("assistant"):
+            yield Markdown(
+                self.text,
+                classes="message-body",
+                open_links=False,
+            )
+        else:
+            # Keep prompts and tool results literal
+            yield Static(self.text, classes="message-body", markup=False)

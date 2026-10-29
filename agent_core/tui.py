@@ -149,9 +149,9 @@ class OceanusApp(App):
         entry = ConversationMessage(kind, message, heading=heading)
         conversation.mount(entry)
 
-        # Keep the view still when reading earlier messages
+        # Follow later layout changes while at the bottom
         if follow_output:
-            conversation.scroll_end(animate=False)
+            conversation.anchor()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # Runs on Enter key pressed
