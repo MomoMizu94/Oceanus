@@ -20,6 +20,7 @@ from agent_core.edit_approval_screen import EditApprovalScreen
 from agent_core.sensitive_approval_screen import SensitiveApprovalScreen
 from agent_core.instructions import build_system_prompt
 from agent_core.web_approval_screen import WebApprovalScreen
+from agent_core.fetch_approval_screen import FetchApprovalScreen
 
 
 class OceanusApp(App):
@@ -194,6 +195,9 @@ class OceanusApp(App):
     def request_web_approval(self, query: str) -> bool:
         return self.call_from_thread(self.show_web_approval, query)
 
+    def request_fetch_approval(self, url: str) -> bool:
+        return self.call_from_thread(self.show_fetch_approval, url)
+
     def on_select_changed(self, event: Select.Changed) -> None:
         """ Called when model selection changes. Updates model & header.
          Busy check rejects selection that was triggered after task start. """
@@ -280,6 +284,14 @@ class OceanusApp(App):
         return True
     
 
+    async def show_fetch_approval(self, url: str) -> bool:
+        # Cancellation may arrive before or during the dialog
+        if self.cancel_event.is_set():
+            return False
+
+        decision = await self.push_screen_wait(FetchApprovalScreen(url))
+        return decision is True and not self.cancel_event.is_set()
+
     @work(thread=True)
     def run_task(self, task: str, history: list[dict], model: str) -> None:
         """ Runs the prompt. Executed in a background thread. """
@@ -301,6 +313,7 @@ class OceanusApp(App):
                 on_sensitive_approval=self.request_sensitive_approval,
                 on_discovery_approval=self.request_discovery_approval,
                 on_web_approval=self.request_web_approval,
+                on_fetch_approval=self.request_fetch_approval,
             )
         except Exception as error:
             self.call_from_thread(self.finish_task, f"Error: {type(error).__name__}: {error}", None)
@@ -420,7 +433,7 @@ class OceanusApp(App):
         self.cancel_event.set()
         self.sub_title = f"{self.model} | Cancelling..."
 
-        if isinstance(self.screen, (ShellApprovalScreen, FileApprovalScreen, EditApprovalScreen, SensitiveApprovalScreen, WebApprovalScreen)):
+        if isinstance(self.screen, (ShellApprovalScreen, FileApprovalScreen, EditApprovalScreen, SensitiveApprovalScreen, WebApprovalScreen, FetchApprovalScreen)):
             self.screen.dismiss(False)
 
         self.notify("Cancellation requested. Waiting for the current operation to finish.")

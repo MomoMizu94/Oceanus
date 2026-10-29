@@ -24,7 +24,8 @@ def run_agent(
         on_edit_approval: Callable[[str, str], bool] | None = None,
         on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
         on_discovery_approval: Callable[[str, str], bool] | None = None,
-        on_web_approval: Callable[[str], bool] | None = None
+        on_web_approval: Callable[[str], bool] | None = None,
+        on_fetch_approval: Callable[[str], bool] | None = None
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -97,6 +98,13 @@ def run_agent(
             return False
 
         return True
+
+    def request_fetch_approval(url: str) -> bool:
+        if cancel_requested() or on_fetch_approval is None:
+            return False
+
+        decision = on_fetch_approval(url)
+        return decision is True and not cancel_requested()
 
     if max_turns < 1:
         raise ValueError ("max_turns must be at least 1")
@@ -184,7 +192,7 @@ def run_agent(
                                          "find_files",)
             # Web content can contain errors
             # Keep operation's status separate from content returned by search
-            uses_structured_result = is_file_tool or tool_name == "web_search"
+            uses_structured_result = is_file_tool or tool_name in ("web_search", "fetch_page")
             file_result = None
 
             if cancel_requested():
@@ -208,6 +216,13 @@ def run_agent(
                     elif tool_name == "web_search":
                         # Supply Oceanus' callback
                         result = tool_function(**arguments, on_web_approval=request_web_approval)
+                    elif tool_name == "fetch_page":
+                        # Only Oceanus supplies approval and cancellation callbacks
+                        result = tool_function(
+                            **arguments,
+                            on_fetch_approval=request_fetch_approval,
+                            should_cancel=cancel_requested,
+                        )
                     elif tool_name == "find_files":
                         result = tool_function(**arguments, workspace_root=workspace_root, on_discovery_approval=request_discovery_approval)
                     elif tool_name == "search_files":
