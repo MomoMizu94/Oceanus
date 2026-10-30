@@ -23,6 +23,7 @@ from agent_core.instructions import build_system_prompt
 from agent_core.web_approval_screen import WebApprovalScreen
 from agent_core.fetch_approval_screen import FetchApprovalScreen
 from agent_core.conversation_message import ConversationMessage
+from agent_core.wal_theme import load_wal_theme
 
 
 class OceanusApp(App):
@@ -63,6 +64,16 @@ class OceanusApp(App):
     def __init__(self) -> None:
         """ App state initialization """
         super().__init__()
+
+        # Load wallpaper palette before building the interface
+        self.wal_path = Path.home() / ".cache" / "wal" / "colors.json"
+        wal_theme = load_wal_theme(self.wal_path)
+        self.wal_theme = wal_theme
+
+        if wal_theme is not None:
+            self.register_theme(wal_theme)
+            self.theme = wal_theme.name
+
         self.model = DEFAULT_MODEL
         self.busy = False
         self.cancel_event = Event()
@@ -102,6 +113,7 @@ class OceanusApp(App):
 
     async def on_mount(self) -> None:
         # Runs after interface mounts
+        self.set_interval(1.0, self.reload_wal_theme)
         self.sub_title = "Loading Ollama models..."
         selector = self.query_one("#model-select", Select)
         task_input = self.query_one("#task-input", Input).focus()
@@ -136,6 +148,23 @@ class OceanusApp(App):
         task_input.disabled = False
         self.sub_title = self.model
         task_input.focus()
+
+    def reload_wal_theme(self) -> None:
+        new_theme = load_wal_theme(self.wal_path)
+
+        # Keep the current colors until a complete palette is available
+        if new_theme is None or new_theme ==  self.wal_theme:
+            return
+
+        self.wal_theme = new_theme
+        self.register_theme(new_theme)
+
+        if self.theme == new_theme.name:
+            # The name stayed the same. Colors changed
+            # Only assigning the name would not trigger Textual theme update
+            self.mutate_reactive(App.theme)
+        else:
+            self.theme = new_theme.name
 
     def write_message(
         self,

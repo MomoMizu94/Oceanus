@@ -1,6 +1,6 @@
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Static, Markdown
+from textual.widgets import Static, Markdown, Collapsible
 
 
 class ConversationMessage(Vertical):
@@ -21,15 +21,20 @@ class ConversationMessage(Vertical):
         margin: 0 0 1 0;
         padding: 0 1;
         border: none;
-        color: #E6EDF3;
+        color: $foreground;
     }
 
     ConversationMessage Markdown.message-body {
         padding: 0;
     }
 
+    ConversationMessage Markdown MarkdownBlock > .strong {
+        color: $text-accent;
+        text-style: bold;
+    }
+
     ConversationMessage.user {
-        background: #202B34;
+        background: $surface;
         padding: 1 2;
     }
 
@@ -42,7 +47,7 @@ class ConversationMessage(Vertical):
     }
 
     ConversationMessage.assistant .message-heading {
-        color: #78C6D0;
+        color: $text-accent;
     }
 
     ConversationMessage.tool,
@@ -52,22 +57,32 @@ class ConversationMessage(Vertical):
 
     ConversationMessage.tool .message-body {
         margin-left: 2;
-        color: #9AA8B5;
+        color: $foreground-muted;
     }
 
     ConversationMessage.status .message-heading,
     ConversationMessage.status .message-body,
     ConversationMessage.notice .message-heading,
     ConversationMessage.notice .message-body {
-        color: #9AA8B5;
+        color: $foreground-muted;
     }
 
     ConversationMessage.error .message-heading {
-        color: #E6A0A0;
+        color: $text-error;
     }
 
     ConversationMessage.error .message-body {
-        color: #9AA8B5;
+        color: $foreground-muted;
+    }
+
+    ConversationMessage .tool-details {
+        background: transparent;
+        border: none;
+        padding: 0;
+    }
+
+    ConversationMessage .tool-details > Contents {
+        padding: 0;
     }
 
     """
@@ -87,8 +102,11 @@ class ConversationMessage(Vertical):
 
 
     def compose(self) -> ComposeResult:
-        # Heading
-        yield Static(self.heading, classes="message-heading", markup=False)
+        yield Static(
+            self.heading,
+            classes="message-heading",
+            markup=False,
+        )
 
         if self.has_class("assistant"):
             yield Markdown(
@@ -96,6 +114,22 @@ class ConversationMessage(Vertical):
                 classes="message-body",
                 open_links=False,
             )
+        elif self.has_class("tool"):
+            # Hide the output until the user opens its details
+            with Collapsible(
+                title="Details",
+                collapsed=True,
+                classes="tool-details",
+            ):
+                yield Static(
+                    self.text,
+                    classes="message-body",
+                    markup=False,
+                )
         else:
-            # Keep prompts and tool results literal
-            yield Static(self.text, classes="message-body", markup=False)
+            # Keep other message types literal
+            yield Static(
+                self.text,
+                classes="message-body",
+                markup=False,
+            )
