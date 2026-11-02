@@ -1,5 +1,5 @@
 from textual.app import App, ComposeResult
-from textual.widgets import Footer, Header, Input, Select
+from textual.widgets import Footer, Header, Select
 from textual.containers import VerticalScroll
 from textual.binding import Binding
 from textual import work
@@ -24,6 +24,7 @@ from agent_core.web_approval_screen import WebApprovalScreen
 from agent_core.fetch_approval_screen import FetchApprovalScreen
 from agent_core.conversation_message import ConversationMessage
 from agent_core.wal_theme import load_wal_theme
+from agent_core.prompt_editor import PromptEditor
 
 
 class OceanusApp(App):
@@ -104,8 +105,7 @@ class OceanusApp(App):
         )
 
         yield VerticalScroll(id="conversation")
-        yield Input(
-            placeholder="Type your message and press Enter",
+        yield PromptEditor(
             disabled=True,
             id="task-input"
         )
@@ -116,7 +116,7 @@ class OceanusApp(App):
         self.set_interval(1.0, self.reload_wal_theme)
         self.sub_title = "Loading Ollama models..."
         selector = self.query_one("#model-select", Select)
-        task_input = self.query_one("#task-input", Input).focus()
+        task_input = self.query_one("#task-input", PromptEditor).focus()
 
         try:
             names = await asyncio.to_thread(list_ollama_models)
@@ -182,22 +182,24 @@ class OceanusApp(App):
         if follow_output:
             conversation.anchor()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        # Runs on Enter key pressed
-        task = event.value.strip()
+    def on_prompt_editor_submitted(self, event: PromptEditor.Submitted) -> None:
+        event.stop()
+        task_input = self.query_one("#task-input", PromptEditor)
+        task = event.text
 
-        if not task or self.busy:
+        # Check for an empty prompt without trimming the submitted text
+        if not task.strip() or self.busy or task_input.disabled:
             return
 
         self.cancel_event.clear()
         self.busy = True
-        # Disables model selection if busy
         self.query_one("#model-select", Select).disabled = True
         self.sub_title = f"{self.model} | Working..."
         self.write_message(task, kind="user")
-        
-        event.input.clear()
-        event.input.disabled = True
+
+        # Start a fresh draft with no undo history from the sent prompt
+        task_input.load_text("")
+        task_input.disabled = True
 
         self.run_task(task, self.conversation_history.copy(), self.model)
 
@@ -390,7 +392,7 @@ class OceanusApp(App):
         self.sub_title = self.model
         self.query_one("#model-select", Select).disabled = False
 
-        task_input = self.query_one("#task-input", Input)
+        task_input = self.query_one("#task-input", PromptEditor)
         task_input.disabled = False
         task_input.focus()
 
@@ -403,9 +405,9 @@ class OceanusApp(App):
             self.notify("Wait for the current task to finish before opening a session.")
             return
 
-        task_input = self.query_one("#task-input", Input)
+        task_input = self.query_one("#task-input", PromptEditor)
 
-        if self.conversation_history or task_input.value:
+        if self.conversation_history or task_input.text:
             self.notify(
                 "Open sessions in a fresh TUI."
                 "Save you conversation and restart first."
@@ -455,7 +457,7 @@ class OceanusApp(App):
 
         self.write_message(f"Session opened: {path}")
         conversation.scroll_end(animate=False)
-        self.query_one("#task-input", Input).focus()
+        self.query_one("#task-input", PromptEditor).focus()
 
     def action_save_session(self) -> None:
         """ Checks if saving is appropriate, creates directory and calls for helper """
