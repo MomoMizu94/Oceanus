@@ -7,6 +7,7 @@ from importlib.resources import files
 from pathlib import Path
 from uuid import uuid4
 from threading import Event
+from copy import deepcopy
 import asyncio
 from http.client import HTTPException
 
@@ -182,26 +183,40 @@ class OceanusApp(App):
         if follow_output:
             conversation.anchor()
 
+    def write_user_message(self, text: str, attachments=None) -> None:
+        heading = None
+        if isinstance(attachments, list) and attachments:
+            count = len(attachments)
+            noun = "image" if count == 1 else "images"
+            heading = f"You · {count} {noun}"
+        self.write_message(text, kind="user", heading=heading)
+
     def on_prompt_editor_submitted(self, event: PromptEditor.Submitted) -> None:
         event.stop()
         task_input = self.query_one("#task-input", PromptEditor)
         task = event.text
 
-        # Check for an empty prompt without trimming the submitted text
-        if not task.strip() or self.busy or task_input.disabled:
+        if self.busy or task_input.disabled or task_input.read_only or task_input.paste_pending:
+            return
+        # Keep image-only prompts and preserve the user's exact text
+        if not task.strip() and not event.attachments:
             return
 
+        attachments = deepcopy(event.attachments)
         self.cancel_event.clear()
         self.busy = True
         self.query_one("#model-select", Select).disabled = True
         self.sub_title = f"{self.model} | Working..."
-        self.write_message(task, kind="user")
+        self.write_user_message(task, attachments)
 
         # Start a fresh draft with no undo history from the sent prompt
         task_input.load_text("")
         task_input.disabled = True
 
-        self.run_task(task, self.conversation_history.copy(), self.model)
+        self.run_task(
+            task, self.conversation_history.copy(), self.model,
+            attachments=attachments,
+        )
 
     def report_progress(self, message: str) -> None:
         # The loop adds this prefix to intermediate agent replies
@@ -349,7 +364,10 @@ class OceanusApp(App):
         return decision is True and not self.cancel_event.is_set()
 
     @work(thread=True)
-    def run_task(self, task: str, history: list[dict], model: str) -> None:
+    def run_task(
+        self, task: str, history: list[dict], model: str,
+        *, attachments: list[dict] | None = None,
+    ) -> None:
         """ Runs the prompt. Executed in a background thread. """
         try:
             coding_prompt = build_system_prompt(self.coding_prompt)
@@ -370,21 +388,27 @@ class OceanusApp(App):
                 on_discovery_approval=self.request_discovery_approval,
                 on_web_approval=self.request_web_approval,
                 on_fetch_approval=self.request_fetch_approval,
+                attachments=attachments,
             )
         except Exception as error:
             self.call_from_thread(
                 self.finish_task,
                 f"{type(error).__name__}: {error}",
-                None,
+                history,
+                failed=True,
             )
         else:
             self.call_from_thread(self.finish_task, answer, history)
 
-    def finish_task(self, message: str, history: list[dict] | None) -> None:
-        if history is None:
+    def finish_task(
+        self, message: str, history: list[dict] | None, *, failed: bool = False,
+    ) -> None:
+        # Keep submitted attachments and completed tool actions after a failure
+        if history is not None:
+            self.conversation_history = history
+        if failed or history is None:
             kind = "error"
         else:
-            self.conversation_history = history
             kind = "assistant"
 
         self.write_message(message, kind=kind)
@@ -406,6 +430,10 @@ class OceanusApp(App):
             return
 
         task_input = self.query_one("#task-input", PromptEditor)
+
+        if task_input.paste_pending:
+            self.notify("Wait for the image paste to finish before opening a session.")
+            return
 
         if self.conversation_history or task_input.text:
             self.notify(
@@ -452,8 +480,11 @@ class OceanusApp(App):
         for message in history:
             role = message.get("role")
             content = message.get("content")
-            if role in ("user", "assistant", "tool") and isinstance(content, str):
-                self.write_message(content, kind=role)
+            if isinstance(content, str):
+                if role == "user":
+                    self.write_user_message(content, message.get("attachments"))
+                elif role in ("assistant", "tool"):
+                    self.write_message(content, kind=role)
 
         self.write_message(f"Session opened: {path}")
         conversation.scroll_end(animate=False)

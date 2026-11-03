@@ -1,12 +1,21 @@
-from litellm import completion
+from litellm import completion, supports_vision
 import os
 import json
+import re
+from copy import deepcopy
+from pathlib import Path
+from http.client import HTTPException
 
 from agent_core.tools.registry import get_tool_schemas
+from agent_core.image_attachments import build_user_content, MAX_IMAGES_PER_MESSAGE
+from agent_core.model_discovery import ollama_supports_images
 
 
 DEFAULT_MODEL = "openai/gpt-4.1"
 DEFAULT_MAX_COMPLETION_TOKENS = 4096
+# Limits for the entire conversation sent in one request
+MAX_REQUEST_IMAGES = 8
+MAX_REQUEST_IMAGE_CHARS = 48 * 1024 * 1024
 
 
 class ModelResponseError(RuntimeError):
@@ -57,6 +66,90 @@ def check_request_budget(conversation_history, tools) -> None:
             "Earlier tool actions, if any, were not undone."
         )
 
+def prepare_model_messages(conversation_history: list[dict], tools, *, attachment_dir: Path | None = None) -> list[dict]:
+    """ Build request messages without changing saved conversation data """
+    if not isinstance(conversation_history, list):
+        raise ModelResponseError("Conversation history must be a list!")
+
+    # Count text, tool schemas and attachment metadata before loading images
+    check_request_budget(conversation_history, tools)
+    messages = deepcopy(conversation_history)
+    image_count = 0
+
+    for message in messages:
+        if not isinstance(message, dict):
+            raise ModelResponseError("Each message must be a dictionary!")
+
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise ModelResponseError("Saves message content must be text or null!")
+        if "attachments" not in message:
+            continue
+
+        if message.get("role") != "user" or not isinstance(content, str):
+            raise ModelResponseError("Attachments requires a user message with text content!")
+
+        attachments = message["attachments"]
+        if not isinstance(attachments, list):
+            raise ModelResponseError("Attachments must be a list!")
+        if len(attachments) > MAX_IMAGES_PER_MESSAGE:
+            raise RequestBudgetExceededError("Too many images in one message!")
+
+        labels = set()
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                raise ModelResponseError("Each attachment must be a dictionary!")
+            if not isinstance(attachment.get("id"), str):
+                raise ModelResponseError("Each attachment needs a string ID!")
+            if "label" in attachment:
+                label = attachment["label"]
+                if not isinstance(label, str) or len(label) > 32:
+                    raise ModelResponseError("Invalid image attachment label!")
+                if re.fullmatch(r"\[Image [1-9][0-9]*\]", label) is None:
+                    raise ModelResponseError("Invalid image attachment label!")
+                if label in labels:
+                    raise ModelResponseError("Image labels must be unique within a message!")
+                labels.add(label)
+
+        image_count += len(attachments)
+        if image_count > MAX_REQUEST_IMAGES:
+            raise RequestBudgetExceededError("Too many images across the conversation!")
+
+    # Only expand images after checking every message and the total image count
+    image_chars = 0
+    for message in messages:
+        attachments = message.pop("attachments", [])
+        if not attachments:
+            continue
+
+        attachment_ids = []
+        for attachment in attachments:
+            attachment_ids.append(attachment["id"])
+
+        try:
+            content = build_user_content(message["content"], attachment_ids, attachment_dir=attachment_dir)
+        except (OSError, ValueError) as error:
+            raise ModelResponseError(f"Could not prepare image attachments: {error}") from error
+
+        labeled_content = []
+        image_index = 0
+        for part in content:
+            if part["type"] == "image_url":
+                # Keep each image tied to its marker after reordering or deletion
+                label = attachments[image_index].get("label")
+                if label is not None:
+                    labeled_content.append({"type": "text", "text": label})
+                image_index += 1
+                image_chars += len(part["image_url"]["url"])
+            labeled_content.append(part)
+
+        if image_chars > MAX_REQUEST_IMAGE_CHARS:
+            raise RequestBudgetExceededError("Encoded images exceed the request image budget!")
+
+        message["content"] = labeled_content
+
+    return messages
+
 def get_max_completion_tokens() -> int:
     """ Read and validate output-token limit for one model request """
     raw_value = os.environ.get(
@@ -75,9 +168,27 @@ def get_max_completion_tokens() -> int:
 
     return limit
 
+def require_image_support(model: str) -> None:
+    """ Stop image requests when model support is not confirmed """
+    try:
+        if model.startswith(("ollama_chat/", "ollama/")):
+            model_name = model.split("/", 1)[1]
+            supported = ollama_supports_images(model_name)
+        else:
+            supported = supports_vision(model=model)
+    except (OSError, ValueError, HTTPException) as error:
+        raise ModelResponseError("Couldn't check model image support. No completion request was sent!") from error
+
+    if supported is not True:
+        raise ModelResponseError(
+            f"Image support is not confirmed for {model}. "
+            "Choose a model that supports images or start a text-only conversation. "
+            "No completion request was sent."
+        )
+
 
 def call_completion(
-        conversation_history, 
+        conversation_history,
         model: str = DEFAULT_MODEL, 
         *, 
         use_tools: bool = True, 
@@ -86,7 +197,12 @@ def call_completion(
     """ Make one model request and return full response """
     """ Preserve Ollama's native stop reason """
     tools = get_tool_schemas(allowed_tools) if use_tools else []
-    check_request_budget(conversation_history, tools)
+    request_messages = prepare_model_messages(conversation_history, tools)
+
+    for message in request_messages:
+        if isinstance(message.get("content"), list):
+            require_image_support(model)
+            break
     
     is_ollama = model.startswith("ollama_chat/")
     native_reason = None
@@ -117,7 +233,7 @@ def call_completion(
     extra_options = {"logger_fn": capture_ollama_status} if is_ollama else {}
     response = completion(
         model=model,
-        messages=conversation_history,
+        messages=request_messages,
         tools=tools or None,
         max_completion_tokens=get_max_completion_tokens(),
         stream=False,

@@ -2,6 +2,7 @@
 import json
 from collections.abc import Callable
 from pathlib import Path
+from copy import deepcopy
 
 from agent_core.model_client import call_model, DEFAULT_MODEL, ModelResponseError
 from agent_core.tools.registry import get_tool_function, TOOL_REGISTRY
@@ -25,7 +26,9 @@ def run_agent(
         on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
         on_discovery_approval: Callable[[str, str], bool] | None = None,
         on_web_approval: Callable[[str], bool] | None = None,
-        on_fetch_approval: Callable[[str], bool] | None = None
+        on_fetch_approval: Callable[[str], bool] | None = None,
+        *,
+        attachments: list[dict] | None = None
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -117,6 +120,16 @@ def run_agent(
     unknown_tools = permitted_tools - registered_tools
     if unknown_tools:
         raise ValueError(f"Unknown allowed tools: {', '.join(sorted(unknown_tools))}")
+    
+    user_message = {"role": "user", "content": task}
+
+    if attachments is not None:
+        if not isinstance(attachments, list):
+            raise ValueError("Attachments must be a list!")
+
+        if attachments:
+            # Keep submitted attachments separate from the editable draft
+            user_message["attachments"] = deepcopy(attachments)
 
     # Get current workspace path
     workspace_root = Path.cwd().resolve()
@@ -135,12 +148,7 @@ def run_agent(
         else:
             conversation_history.insert(0, system_message)
 
-    conversation_history.append(
-        {
-            "role": "user",
-            "content": task
-        }
-    )
+    conversation_history.append(user_message)
 
     for turn in range(1, max_turns + 1):
         report_progress(f"This is model turn: {turn}/{max_turns}")

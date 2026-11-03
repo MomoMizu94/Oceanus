@@ -12,7 +12,8 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "pydantic",
-    "textual"
+    "textual",
+    "Pillow",
 ]
 
 # Both top-level packages belong to the same project.
