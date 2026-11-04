@@ -1,10 +1,11 @@
 from textual.app import App, ComposeResult
-from textual.widgets import Footer, Header, Select
-from textual.containers import VerticalScroll
+from textual.widgets import Footer, Header, Select, Static
+from textual.containers import Horizontal, VerticalScroll
 from textual.binding import Binding
 from textual import work
 from importlib.resources import files
 from pathlib import Path
+import os
 from uuid import uuid4
 from threading import Event
 from copy import deepcopy
@@ -14,7 +15,9 @@ from http.client import HTTPException
 from agent_core.loop import run_agent
 from agent_core.approval_screen import ShellApprovalScreen
 from agent_core.file_approval_screen import FileApprovalScreen
-from agent_core.memory.session import load_session, save_session
+from agent_core.memory.session import load_session_with_workspace, save_session
+from agent_core.shell_sandbox import validate_workspace_root
+from agent_core.workspace_screen import WorkspaceScreen
 from agent_core.session_picker import SessionPicker
 from agent_core.model_client import DEFAULT_MODEL
 from agent_core.model_discovery import list_ollama_models
@@ -26,6 +29,7 @@ from agent_core.fetch_approval_screen import FetchApprovalScreen
 from agent_core.conversation_message import ConversationMessage
 from agent_core.wal_theme import load_wal_theme
 from agent_core.prompt_editor import PromptEditor
+from agent_core.reasoning_selector import ReasoningSelector
 
 
 class OceanusApp(App):
@@ -50,6 +54,25 @@ class OceanusApp(App):
         height: 1fr;
         padding: 1 2;
         align-horizontal: center;
+    }
+
+    #workspace-path {
+        height: auto;
+        padding: 0 2;
+        color: $text-muted;
+    }
+
+    #model-controls {
+        height: auto;
+    }
+
+    #model-select {
+        width: 2fr;
+    }
+
+    #reasoning-select {
+        width: 1fr;
+        min-width: 28;
     }
 
     #conversation > ConversationMessage {
@@ -80,6 +103,7 @@ class OceanusApp(App):
         self.busy = False
         self.cancel_event = Event()
         self.conversation_history: list[dict] = []
+        self.workspace = Path.cwd().resolve()
         self.session_path = (
             Path.home() / ".local" / "share" / "oceanus" / "sessions"
             / f"session-{uuid4().hex}.json"
@@ -94,16 +118,17 @@ class OceanusApp(App):
     def compose(self) -> ComposeResult:
         """ Supplied widgets on screen """
         yield Header()
+        yield Static(str(self.workspace), id="workspace-path", markup=False)
         # Drop-down model selection
-        yield Select(
-            [
-                ("GPT-4.1 - OpenAI API", DEFAULT_MODEL)
-            ],
-            value=self.model,
-            allow_blank=False,
-            disabled=True,
-            id="model-select"
-        )
+        with Horizontal(id="model-controls"):
+            yield Select(
+                [("GPT-4.1 - OpenAI API", DEFAULT_MODEL)],
+                value=self.model,
+                allow_blank=False,
+                disabled=True,
+                id="model-select"
+            )
+            yield ReasoningSelector(id="reasoning-select")
 
         yield VerticalScroll(id="conversation")
         yield PromptEditor(
@@ -145,6 +170,7 @@ class OceanusApp(App):
             self.model = local_options[0][1] if local_options else DEFAULT_MODEL
 
         selector.value = self.model
+        self.query_one(ReasoningSelector).set_model(self.model)
         selector.disabled = False
         task_input.disabled = False
         self.sub_title = self.model
@@ -206,6 +232,9 @@ class OceanusApp(App):
         self.cancel_event.clear()
         self.busy = True
         self.query_one("#model-select", Select).disabled = True
+        reasoning_selector = self.query_one(ReasoningSelector)
+        reasoning = reasoning_selector.reasoning
+        reasoning_selector.set_task_busy(True)
         self.sub_title = f"{self.model} | Working..."
         self.write_user_message(task, attachments)
 
@@ -216,6 +245,7 @@ class OceanusApp(App):
         self.run_task(
             task, self.conversation_history.copy(), self.model,
             attachments=attachments,
+            reasoning=reasoning,
         )
 
     def report_progress(self, message: str) -> None:
@@ -284,6 +314,7 @@ class OceanusApp(App):
 
         self.model = event.value
         self.sub_title = self.model
+        self.query_one(ReasoningSelector).set_model(self.model)
 
     async def show_file_approval(self, operation: str, path: str) -> bool:
         # Avoid opening a dialog after cancellation
@@ -367,6 +398,7 @@ class OceanusApp(App):
     def run_task(
         self, task: str, history: list[dict], model: str,
         *, attachments: list[dict] | None = None,
+        reasoning: str | bool | None = None,
     ) -> None:
         """ Runs the prompt. Executed in a background thread. """
         try:
@@ -389,6 +421,7 @@ class OceanusApp(App):
                 on_web_approval=self.request_web_approval,
                 on_fetch_approval=self.request_fetch_approval,
                 attachments=attachments,
+                reasoning=reasoning,
             )
         except Exception as error:
             self.call_from_thread(
@@ -415,6 +448,7 @@ class OceanusApp(App):
         self.busy = False
         self.sub_title = self.model
         self.query_one("#model-select", Select).disabled = False
+        self.query_one(ReasoningSelector).set_task_busy(False)
 
         task_input = self.query_one("#task-input", PromptEditor)
         task_input.disabled = False
@@ -463,14 +497,43 @@ class OceanusApp(App):
         if path is None:
             return
 
+        if self.busy or self.query_one("#task-input", PromptEditor).paste_pending:
+            self.notify("Wait for the current operation before opening a session.")
+            return
+
         try:
-            history = load_session(path)
+            path = path.resolve()
+            history, workspace = load_session_with_workspace(path)
             if not history:
                 raise ValueError("This session is empty!")
         except (OSError, ValueError) as error:
             self.notify(f"Could not open session: {error}", severity="error")
             return
 
+        if workspace is None:
+            def choose_workspace(selected: Path | None) -> None:
+                if selected is not None:
+                    self.apply_session(path, history, selected)
+
+            self.push_screen(WorkspaceScreen(self.workspace), choose_workspace)
+            return
+
+        self.apply_session(path, history, workspace)
+
+    def apply_session(self, path: Path, history: list[dict], workspace: Path) -> None:
+        if self.busy or self.query_one("#task-input", PromptEditor).paste_pending:
+            self.notify("Wait for the current operation before opening a session.")
+            return
+        try:
+            workspace = validate_workspace_root(workspace)
+            # Tools use the process cwd; switch only while the agent is idle
+            os.chdir(workspace)
+        except (OSError, ValueError) as error:
+            self.notify(f"Could not open the session's project folder: {error}", severity="error")
+            return
+
+        self.workspace = workspace
+        self.query_one("#workspace-path", Static).update(str(workspace))
         self.conversation_history = history
         self.session_path = path
         conversation = self.query_one("#conversation", VerticalScroll)
@@ -502,7 +565,7 @@ class OceanusApp(App):
 
         try:
             self.session_path.parent.mkdir(parents=True, exist_ok=True)
-            save_session(self.session_path, self.conversation_history)
+            save_session(self.session_path, self.conversation_history, workspace=self.workspace)
         except (OSError, ValueError, TypeError) as error:
             self.notify(f"Could not save the session: {error}", severity="error")
             return

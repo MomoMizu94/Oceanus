@@ -1,11 +1,13 @@
 # Accept a coding task, load the coding agent settings, and display its progress
 import argparse
+import os
 from importlib.resources import files
 from pathlib import Path
 
-from agent_core.loop import run_agent
+from agent_core.loop import run_agent, DEFAULT_MAX_TURNS
 from agent_core.model_client import DEFAULT_MODEL
-from agent_core.memory.session import load_session, save_session
+from agent_core.memory.session import load_session_with_workspace, save_session
+from agent_core.shell_sandbox import validate_workspace_root
 from agent_core.guardrails import approve_shell, approve_file
 from agent_core.tools.registry import TOOL_REGISTRY
 from agent_core.search_approval import approve_search
@@ -31,8 +33,8 @@ def main() -> None:
     parser.add_argument(
         "--max-turns",
         type=int,
-        default=10,
-        help="Maximum number of turns allowed (default: 10)."
+        default=DEFAULT_MAX_TURNS,
+        help=f"Maximum number of turns allowed (default: {DEFAULT_MAX_TURNS})."
     )
     parser.add_argument(
         "--model",
@@ -49,8 +51,12 @@ def main() -> None:
         type=Path,
         help="Load a conversation from JSON file before the task."
     )
-    tool_options = parser.add_mutually_exclusive_group()
+    parser.add_argument(
+        "--workspace", type=Path,
+        help="Project folder. Required when resuming a session without workspace metadata."
+    )
 
+    tool_options = parser.add_mutually_exclusive_group()
     tool_options.add_argument(
         "--tools",
         nargs="+",
@@ -82,13 +88,37 @@ def main() -> None:
     if arguments.max_turns < 1:
         parser.error("--max-turns must be at least 1!")
 
-    # Fresh run -> empty list; resumed run -> load_session()
+    # Resolve session paths before a workspace change affects relative paths
+    try:
+        if arguments.save is not None:
+            arguments.save = arguments.save.resolve()
+        if arguments.resume is not None:
+            arguments.resume = arguments.resume.resolve()
+    except (OSError, ValueError) as error:
+        parser.error(f"Could not resolve session path: {error}")
+    workspace = arguments.workspace
+
+    # Resume messages together with their original workspace
     conversation_history = []
     if arguments.resume is not None:
         try:
-            conversation_history = load_session(arguments.resume)
+            conversation_history, saved_workspace = load_session_with_workspace(arguments.resume)
+            if saved_workspace is None and workspace is None:
+                parser.error("This session has no project folder. Choose one with --workspace.")
+            if saved_workspace is not None:
+                if workspace is not None and workspace.expanduser().resolve() != saved_workspace.resolve():
+                    parser.error("This session belongs to another project. Start a new conversation to change projects.")
+                workspace = saved_workspace
         except (OSError, ValueError) as error:
             parser.error(f"Couldn't load the session: {error}")
+
+    if workspace is not None:
+        try:
+            workspace = validate_workspace_root(workspace)
+            os.chdir(workspace)
+        except (OSError, ValueError) as error:
+            parser.error(f"Could not open project: {error}")
+    workspace = Path.cwd().resolve()
 
     # Prompt laoding
     try:
@@ -127,7 +157,7 @@ def main() -> None:
 
     if arguments.save is not None:
         try:
-            save_session(arguments.save, conversation_history)
+            save_session(arguments.save, conversation_history, workspace=workspace)
         except (OSError, ValueError) as error:
             parser.error(f"Could not save session: {error}")
 

@@ -12,7 +12,11 @@ from agent_core.model_discovery import ollama_supports_images
 
 
 DEFAULT_MODEL = "openai/gpt-4.1"
+QWEN_Q4_MODEL = "ollama_chat/qwen3.8:27b-q4_K_M"
 DEFAULT_MAX_COMPLETION_TOKENS = 4096
+# Q4 needs room for reasoning and generated code in the same response
+QWEN_Q4_MAX_COMPLETION_TOKENS = 16_384
+QWEN_Q4_CONTEXT_TOKENS = 98_304
 # Limits for the entire conversation sent in one request
 MAX_REQUEST_IMAGES = 8
 MAX_REQUEST_IMAGE_CHARS = 48 * 1024 * 1024
@@ -26,11 +30,21 @@ class ModelOutputTruncatedError(ModelResponseError):
     """ Provider reported an incomplete response at its output limit """
 
 
+class ModelContextLimitError(ModelResponseError):
+    """ The conversation and generated tokens filled the context window """
+
+
 DEFAULT_MAX_REQUEST_CHARS = 512_000
 
 
 class RequestBudgetExceededError(ModelResponseError):
     """ Next request exceeds Oceanus' configured input-size budget """
+
+
+def default_reasoning(model: str) -> str | None:
+    if model == QWEN_Q4_MODEL:
+        return "xhigh"
+    return None
 
 
 def get_max_request_chars() -> int:
@@ -150,11 +164,14 @@ def prepare_model_messages(conversation_history: list[dict], tools, *, attachmen
 
     return messages
 
-def get_max_completion_tokens() -> int:
+def get_max_completion_tokens(model: str = DEFAULT_MODEL) -> int:
     """ Read and validate output-token limit for one model request """
+    default_limit = DEFAULT_MAX_COMPLETION_TOKENS
+    if model == QWEN_Q4_MODEL:
+        default_limit = QWEN_Q4_MAX_COMPLETION_TOKENS
     raw_value = os.environ.get(
         "OCEANUS_MAX_COMPLETION_TOKENS",
-        str(DEFAULT_MAX_COMPLETION_TOKENS)
+        str(default_limit)
     )
     error_message = "OCEANUS_MAX_COMPLETION_TOKENS must be a positive integer."
 
@@ -166,6 +183,26 @@ def get_max_completion_tokens() -> int:
     if limit < 1:
         raise ValueError(error_message)
 
+    return limit
+
+def get_context_tokens(model: str) -> int | None:
+    """ Choose Ollama's context allocation, leaving cloud settings alone """
+    if not model.startswith("ollama_chat/"):
+        return None
+
+    raw_value = os.environ.get("OCEANUS_OLLAMA_NUM_CTX")
+    if raw_value is None:
+        if model == QWEN_Q4_MODEL:
+            return QWEN_Q4_CONTEXT_TOKENS
+        return None
+
+    error_message = "OCEANUS_OLLAMA_NUM_CTX must be a positive integer"
+    try:
+        limit = int(raw_value)
+    except ValueError:
+        raise ValueError(error_message) from None
+    if limit < 1:
+        raise ValueError(error_message)
     return limit
 
 def require_image_support(model: str) -> None:
@@ -192,10 +229,26 @@ def call_completion(
         model: str = DEFAULT_MODEL, 
         *, 
         use_tools: bool = True, 
-        allowed_tools: set[str] | frozenset[str] | None = None
+        allowed_tools: set[str] | frozenset[str] | None = None,
+        reasoning: str | bool | None = None,
 ):
     """ Make one model request and return full response """
     """ Preserve Ollama's native stop reason """
+    if reasoning is not None:
+        if not model.startswith("ollama_chat/"):
+            raise ModelResponseError("Reasoning selection currently supports local Ollama models only")
+        if not isinstance(reasoning, bool):
+            if not isinstance(reasoning, str) or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", reasoning) is None:
+                raise ModelResponseError("Invalid reasoning mode")
+    output_limit = get_max_completion_tokens(model)
+    context_tokens = get_context_tokens(model)
+    # Input and generated tokens must share the context window
+    if context_tokens is not None and output_limit >= context_tokens:
+        raise ModelResponseError(
+            "OCEANUS_MAX_COMPLETION_TOKENS must be smaller than the Ollama context "
+            "configured by OCEANUS_OLLAMA_NUM_CTX or the model's Oceanus default. "
+            "Leave room for the prompt and tool results. No request was sent."
+        )
     tools = get_tool_schemas(allowed_tools) if use_tools else []
     request_messages = prepare_model_messages(conversation_history, tools)
 
@@ -206,18 +259,24 @@ def call_completion(
     
     is_ollama = model.startswith("ollama_chat/")
     native_reason = None
+    native_prompt_tokens = None
+    native_output_tokens = None
 
     def capture_ollama_status(details):
         """ Called by LiteLLM before and after its HTTP request """
-        nonlocal native_reason
+        nonlocal native_reason, native_prompt_tokens, native_output_tokens
         event = details.get("log_event_type")
         if event == "pre_api_call":
             native_reason = None
+            native_prompt_tokens = None
+            native_output_tokens = None
             return
         if event != "post_api_call":
             return
 
         native_reason = None
+        native_prompt_tokens = None
+        native_output_tokens = None
         raw = details.get("original_response")
         if isinstance(raw, str):
             try:
@@ -229,13 +288,25 @@ def call_completion(
             reason = raw.get("done_reason")
             if reason in ("stop", "length"):
                 native_reason = reason
+            prompt_tokens = raw.get("prompt_eval_count")
+            output_tokens = raw.get("eval_count")
+            if type(prompt_tokens) is int and prompt_tokens >= 0:
+                native_prompt_tokens = prompt_tokens
+            if type(output_tokens) is int and output_tokens >= 0:
+                native_output_tokens = output_tokens
 
     extra_options = {"logger_fn": capture_ollama_status} if is_ollama else {}
+    if context_tokens is not None:
+        extra_options["num_ctx"] = context_tokens
+    thinking = default_reasoning(model) if reasoning is None else reasoning
+    if thinking is not None:
+        # Use Ollama's native field so LiteLLM preserves the named thinking level
+        extra_options["think"] = thinking
     response = completion(
         model=model,
         messages=request_messages,
         tools=tools or None,
-        max_completion_tokens=get_max_completion_tokens(),
+        max_completion_tokens=output_limit,
         stream=False,
         **extra_options
     )
@@ -248,21 +319,49 @@ def call_completion(
             )
         if native_reason == "length":
             response.choices[0].finish_reason = "length"
+            # Ollama also reports "length" when the context fills before output does
+            if (context_tokens is not None and native_prompt_tokens is not None
+                    and native_output_tokens is not None):
+                used_tokens = native_prompt_tokens + native_output_tokens
+                if used_tokens >= context_tokens and native_output_tokens < output_limit:
+                    raise ModelContextLimitError(
+                        "Stopped: the model's context window is full. Ollama reported "
+                        f"{native_prompt_tokens:,} input tokens and {native_output_tokens:,} "
+                        f"generated tokens for a {context_tokens:,}-token context. "
+                        f"The {output_limit:,}-token output allowance was not exhausted. "
+                        "The incomplete response was discarded; no tools from that response "
+                        "were executed. Earlier tool actions, if any, were not undone. "
+                        "Start a new session with a concise task summary, or increase "
+                        "OCEANUS_OLLAMA_NUM_CTX if GPU memory permits. "
+                        "Increasing only the output allowance will not make room for this history."
+                    )
 
     return response
 
 
-def call_model(conversation_history, model: str = DEFAULT_MODEL, *, allowed_tools: set[str] | frozenset[str] | None = None):
+def call_model(
+    conversation_history,
+    model: str = DEFAULT_MODEL,
+    *,
+    allowed_tools: set[str] | frozenset[str] | None = None,
+    reasoning: str | bool | None = None,
+):
     """ Return assistant message for agent loop """
-    response = call_completion(conversation_history, model=model, allowed_tools=allowed_tools)
+    response = call_completion(
+        conversation_history, model=model,
+        allowed_tools=allowed_tools, reasoning=reasoning,
+    )
     choice = response.choices[0]
 
     if choice.finish_reason == "length":
         raise ModelOutputTruncatedError(
-            "Stopped: the model reached its output limit. "
+            "Stopped: the model reported a length limit. "
+            f"The configured output limit is {get_max_completion_tokens(model):,} tokens for one response. "
+            "Reasoning tokens also use the output allowance on thinking models. "
             "The incomplete response was discarded; no tools from that response were executed. "
             "Earlier tool actions, if any, were not undone. "
-            "Increase OCEANUS_MAX_COMPLETION_TOKENS or request a smaller change before trying again."
+            "Increase OCEANUS_MAX_COMPLETION_TOKENS or request a smaller change before trying again. "
+            "If the context is full, shorten the conversation or increase its context allocation instead."
         )
 
     return choice.message

@@ -2,6 +2,7 @@
 import json
 from urllib.request import urlopen, Request
 import os
+import re
 
 
 MAX_MODEL_INFO_BYTES = 1024 * 1024
@@ -27,8 +28,8 @@ def list_ollama_models() -> list[str]:
 
     return sorted(names)
 
-def ollama_supports_images(model_name: str) -> bool:
-    """ Ask Ollama whether this model reports image support """
+def get_ollama_model_info(model_name: str) -> dict:
+    """ Read bounded model metadata from the configured Ollama service """
     if not isinstance(model_name, str) or not model_name.strip():
         raise ValueError("An Ollama model name is required!")
 
@@ -49,6 +50,34 @@ def ollama_supports_images(model_name: str) -> bool:
     details = json.loads(raw.decode("utf-8"))
     if not isinstance(details, dict):
         raise ValueError("Invalid Ollama model information!")
+
+    return details
+
+
+def ollama_reasoning_modes(model_name: str) -> list[str | bool]:
+    """ Return only reasoning modes explicitly reported by the model """
+    details = get_ollama_model_info(model_name)
+    thinking = details.get("thinking")
+    if thinking is None:
+        return []
+    if not isinstance(thinking, dict):
+        raise ValueError("Invalid model thinking information")
+    values = thinking.get("values")
+    if not isinstance(values, list) or len(values) > 16:
+        raise ValueError("Invalid model thinking modes")
+    modes = []
+    for value in values:
+        if not isinstance(value, bool):
+            if not isinstance(value, str) or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value) is None:
+                raise ValueError("Invalid model thinking mode")
+        if value not in modes:
+            modes.append(value)
+    return modes
+
+
+def ollama_supports_images(model_name: str) -> bool:
+    """ Ask Ollama whether this model reports image support """
+    details = get_ollama_model_info(model_name)
 
     capabilities = details.get("capabilities")
     if not isinstance(capabilities, list):

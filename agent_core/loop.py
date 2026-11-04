@@ -8,9 +8,11 @@ from agent_core.model_client import call_model, DEFAULT_MODEL, ModelResponseErro
 from agent_core.tools.registry import get_tool_function, TOOL_REGISTRY
 from agent_core.shell_sandbox import ShellSandboxError
 
+DEFAULT_MAX_TURNS = 20
+
 def run_agent(
         task: str,
-        max_turns: int = 10,
+        max_turns: int = DEFAULT_MAX_TURNS,
         system_prompt: str = "",
         model: str = DEFAULT_MODEL,
         conversation_history: list[dict] | None = None,
@@ -28,7 +30,8 @@ def run_agent(
         on_web_approval: Callable[[str], bool] | None = None,
         on_fetch_approval: Callable[[str], bool] | None = None,
         *,
-        attachments: list[dict] | None = None
+        attachments: list[dict] | None = None,
+        reasoning: str | bool | None = None,
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -161,7 +164,8 @@ def run_agent(
             reply = call_model(
                 conversation_history,
                 model=model,
-                allowed_tools=permitted_tools
+                allowed_tools=permitted_tools,
+                reasoning=reasoning,
             )
         # For token limits
         except ModelResponseError as error:

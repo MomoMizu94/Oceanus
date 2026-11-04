@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from litellm import APIConnectionError, Timeout
 
-from agent_core.model_client import call_completion, RequestBudgetExceededError
+from agent_core.model_client import call_completion, RequestBudgetExceededError, ModelContextLimitError
 
 
 app = FastAPI(title="Oceanus API")
@@ -56,6 +56,18 @@ def chat_completions(request: ChatRequest):
             messages,
             model=request.model,
             use_tools=False
+        )
+    except ModelContextLimitError as error:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": str(error),
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": "context_limit_exceeded"
+                }
+            }
         )
     except RequestBudgetExceededError as error:
         return JSONResponse(
