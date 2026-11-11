@@ -6,7 +6,7 @@ from pathlib import Path
 
 from agent_core.loop import run_agent, DEFAULT_MAX_TURNS
 from agent_core.model_client import DEFAULT_MODEL
-from agent_core.memory.session import load_session_with_workspace, save_session
+from agent_core.memory.session import load_session_state, save_session
 from agent_core.shell_sandbox import validate_workspace_root
 from agent_core.guardrails import approve_shell, approve_file
 from agent_core.tools.registry import TOOL_REGISTRY
@@ -100,9 +100,10 @@ def main() -> None:
 
     # Resume messages together with their original workspace
     conversation_history = []
+    active_messages = []
     if arguments.resume is not None:
         try:
-            conversation_history, saved_workspace = load_session_with_workspace(arguments.resume)
+            conversation_history, active_messages, saved_workspace = load_session_state(arguments.resume)
             if saved_workspace is None and workspace is None:
                 parser.error("This session has no project folder. Choose one with --workspace.")
             if saved_workspace is not None:
@@ -140,6 +141,7 @@ def main() -> None:
         system_prompt=coding_prompt,
         model=arguments.model,
         conversation_history=conversation_history,
+        active_messages=active_messages,
         on_progress=print,
         on_approval=approve_shell,
         on_file_approval=approve_file,
@@ -157,7 +159,10 @@ def main() -> None:
 
     if arguments.save is not None:
         try:
-            save_session(arguments.save, conversation_history, workspace=workspace)
+            save_session(
+                arguments.save, conversation_history, workspace=workspace,
+                active_messages=active_messages,
+            )
         except (OSError, ValueError) as error:
             parser.error(f"Could not save session: {error}")
 

@@ -15,7 +15,7 @@ from http.client import HTTPException
 from agent_core.loop import run_agent
 from agent_core.approval_screen import ShellApprovalScreen
 from agent_core.file_approval_screen import FileApprovalScreen
-from agent_core.memory.session import load_session_with_workspace, save_session
+from agent_core.memory.session import load_session_state, save_session
 from agent_core.shell_sandbox import validate_workspace_root
 from agent_core.workspace_screen import WorkspaceScreen
 from agent_core.session_picker import SessionPicker
@@ -103,6 +103,7 @@ class OceanusApp(App):
         self.busy = False
         self.cancel_event = Event()
         self.conversation_history: list[dict] = []
+        self.active_messages: list[dict] | None = None
         self.workspace = Path.cwd().resolve()
         self.session_path = (
             Path.home() / ".local" / "share" / "oceanus" / "sessions"
@@ -243,9 +244,10 @@ class OceanusApp(App):
         task_input.disabled = True
 
         self.run_task(
-            task, self.conversation_history.copy(), self.model,
+            task, deepcopy(self.conversation_history), self.model,
             attachments=attachments,
             reasoning=reasoning,
+            active_messages=deepcopy(self.active_messages),
         )
 
     def report_progress(self, message: str) -> None:
@@ -399,8 +401,11 @@ class OceanusApp(App):
         self, task: str, history: list[dict], model: str,
         *, attachments: list[dict] | None = None,
         reasoning: str | bool | None = None,
+        active_messages: list[dict] | None = None,
     ) -> None:
         """ Runs the prompt. Executed in a background thread. """
+        if active_messages is None:
+            active_messages = deepcopy(history)
         try:
             coding_prompt = build_system_prompt(self.coding_prompt)
             answer = run_agent(
@@ -408,6 +413,7 @@ class OceanusApp(App):
                 model=model,
                 system_prompt=coding_prompt,
                 conversation_history=history,
+                active_messages=active_messages,
                 on_progress=self.report_progress,
                 on_approval=self.request_approval,
                 on_file_approval=self.request_file_approval,
@@ -429,16 +435,21 @@ class OceanusApp(App):
                 f"{type(error).__name__}: {error}",
                 history,
                 failed=True,
+                active_messages=active_messages,
             )
         else:
-            self.call_from_thread(self.finish_task, answer, history)
+            self.call_from_thread(
+                self.finish_task, answer, history, active_messages=active_messages,
+            )
 
     def finish_task(
         self, message: str, history: list[dict] | None, *, failed: bool = False,
+        active_messages: list[dict] | None = None,
     ) -> None:
         # Keep submitted attachments and completed tool actions after a failure
         if history is not None:
             self.conversation_history = history
+            self.active_messages = active_messages
         if failed or history is None:
             kind = "error"
         else:
@@ -503,7 +514,7 @@ class OceanusApp(App):
 
         try:
             path = path.resolve()
-            history, workspace = load_session_with_workspace(path)
+            history, active_messages, workspace = load_session_state(path)
             if not history:
                 raise ValueError("This session is empty!")
         except (OSError, ValueError) as error:
@@ -513,14 +524,17 @@ class OceanusApp(App):
         if workspace is None:
             def choose_workspace(selected: Path | None) -> None:
                 if selected is not None:
-                    self.apply_session(path, history, selected)
+                    self.apply_session(path, history, selected, active_messages=active_messages)
 
             self.push_screen(WorkspaceScreen(self.workspace), choose_workspace)
             return
 
-        self.apply_session(path, history, workspace)
+        self.apply_session(path, history, workspace, active_messages=active_messages)
 
-    def apply_session(self, path: Path, history: list[dict], workspace: Path) -> None:
+    def apply_session(
+        self, path: Path, history: list[dict], workspace: Path,
+        *, active_messages: list[dict] | None = None,
+    ) -> None:
         if self.busy or self.query_one("#task-input", PromptEditor).paste_pending:
             self.notify("Wait for the current operation before opening a session.")
             return
@@ -535,6 +549,9 @@ class OceanusApp(App):
         self.workspace = workspace
         self.query_one("#workspace-path", Static).update(str(workspace))
         self.conversation_history = history
+        if active_messages is None:
+            active_messages = deepcopy(history)
+        self.active_messages = active_messages
         self.session_path = path
         conversation = self.query_one("#conversation", VerticalScroll)
         conversation.remove_children()
@@ -565,7 +582,10 @@ class OceanusApp(App):
 
         try:
             self.session_path.parent.mkdir(parents=True, exist_ok=True)
-            save_session(self.session_path, self.conversation_history, workspace=self.workspace)
+            save_session(
+                self.session_path, self.conversation_history, workspace=self.workspace,
+                active_messages=self.active_messages,
+            )
         except (OSError, ValueError, TypeError) as error:
             self.notify(f"Could not save the session: {error}", severity="error")
             return

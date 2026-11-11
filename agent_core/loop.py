@@ -5,8 +5,9 @@ from pathlib import Path
 from copy import deepcopy
 
 from agent_core.model_client import call_model, DEFAULT_MODEL, ModelResponseError
-from agent_core.tools.registry import get_tool_function, TOOL_REGISTRY
+from agent_core.tools.registry import get_tool_function, get_tool_schemas, TOOL_REGISTRY
 from agent_core.shell_sandbox import ShellSandboxError
+from agent_core.compaction_runtime import compact_before_request
 
 DEFAULT_MAX_TURNS = 20
 
@@ -32,6 +33,7 @@ def run_agent(
         *,
         attachments: list[dict] | None = None,
         reasoning: str | bool | None = None,
+        active_messages: list[dict] | None = None,
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -140,18 +142,35 @@ def run_agent(
     if conversation_history is None:
         conversation_history = []
 
+    if active_messages is conversation_history:
+        raise ValueError("Active context must be separate from the full transcript!")
+    if active_messages is None:
+        active_messages = deepcopy(conversation_history)
+    if not isinstance(active_messages, list):
+        raise ValueError("Active context must be a list!")
+    if bool(active_messages) != bool(conversation_history):
+        raise ValueError("Active context and full transcript must both be empty or nonempty!")
+
+    def append_message(message: dict) -> None:
+        # New exchanges belong in both views, but summaries belong only in active context
+        conversation_history.append(deepcopy(message))
+        active_messages.append(deepcopy(message))
+
     # Use supplied instructions for fresh and resumed sessions
     if system_prompt:
         system_message = {
             "role": "system",
             "content": system_prompt
         }
-        if conversation_history and conversation_history[0].get("role") == "system":
-            conversation_history[0] = system_message
-        else:
-            conversation_history.insert(0, system_message)
+        for history in (conversation_history, active_messages):
+            if history and history[0].get("role") == "system":
+                history[0] = deepcopy(system_message)
+            else:
+                history.insert(0, deepcopy(system_message))
 
-    conversation_history.append(user_message)
+    append_message(user_message)
+    compacted_this_task = False
+    tool_schemas = get_tool_schemas(permitted_tools)
 
     for turn in range(1, max_turns + 1):
         report_progress(f"This is model turn: {turn}/{max_turns}")
@@ -161,13 +180,24 @@ def run_agent(
             return "Task cancelled."
 
         try:
+            # Every previous tool batch is complete before reaching this boundary
+            compacted = compact_before_request(
+                active_messages, tool_schemas, model=model, reasoning=reasoning,
+                already_compacted=compacted_this_task,
+                should_cancel=cancel_requested, on_progress=report_progress,
+            )
+            compacted_this_task = compacted_this_task or compacted
+            if cancel_requested():
+                return "Task cancelled."
             reply = call_model(
-                conversation_history,
+                active_messages,
                 model=model,
                 allowed_tools=permitted_tools,
                 reasoning=reasoning,
             )
-        # For token limits
+        except InterruptedError:
+            return "Task cancelled."
+        # For token limits and failed compaction
         except ModelResponseError as error:
             if cancel_requested():
                 return "Task cancelled."
@@ -182,7 +212,7 @@ def run_agent(
             break
 
         # Preserve agent's tool requests before adding to result
-        conversation_history.append(reply.model_dump(exclude_none=True))
+        append_message(reply.model_dump(exclude_none=True))
 
         # If no tool requests -> task finished
         if not reply.tool_calls:
@@ -284,7 +314,7 @@ def run_agent(
                 )
 
             # Record results
-            conversation_history.append(
+            append_message(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call.id,

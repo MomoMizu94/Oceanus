@@ -5,6 +5,7 @@ import re
 from copy import deepcopy
 from pathlib import Path
 from http.client import HTTPException
+import math
 
 from agent_core.tools.registry import get_tool_schemas
 from agent_core.image_attachments import build_user_content, MAX_IMAGES_PER_MESSAGE
@@ -43,7 +44,7 @@ class RequestBudgetExceededError(ModelResponseError):
 
 def default_reasoning(model: str) -> str | None:
     if model == QWEN_Q4_MODEL:
-        return "xhigh"
+        return "medium"
     return None
 
 
@@ -231,21 +232,43 @@ def call_completion(
         use_tools: bool = True, 
         allowed_tools: set[str] | frozenset[str] | None = None,
         reasoning: str | bool | None = None,
+        output_tokens: int | None = None,
+        timeout_seconds: float | None = None,
+        allow_retries: bool = True,
 ):
     """ Make one model request and return full response """
     """ Preserve Ollama's native stop reason """
+    if type(allow_retries) is not bool:
+        raise ValueError("allow_retries must be a boolean!")
+
     if reasoning is not None:
         if not model.startswith("ollama_chat/"):
             raise ModelResponseError("Reasoning selection currently supports local Ollama models only")
         if not isinstance(reasoning, bool):
             if not isinstance(reasoning, str) or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", reasoning) is None:
                 raise ModelResponseError("Invalid reasoning mode")
-    output_limit = get_max_completion_tokens(model)
+
+    # Summary can use its own allowance without changing chat defaults
+    # Choose between normal allowance or caller's override (summarize)
+    if output_tokens is None:
+        output_limit = get_max_completion_tokens(model)
+    else:
+        if type(output_tokens) is not int or output_tokens < 1:
+            raise ValueError("output_tokens must be a positive integer!")
+        output_limit = output_tokens
+
+    # Timeout validation
+    if timeout_seconds is not None:
+        if type(timeout_seconds) not in (int, float):
+            raise ValueError("timeout_seconds must be a positive finite number!")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be a positive finite number!")
+
     context_tokens = get_context_tokens(model)
     # Input and generated tokens must share the context window
     if context_tokens is not None and output_limit >= context_tokens:
         raise ModelResponseError(
-            "OCEANUS_MAX_COMPLETION_TOKENS must be smaller than the Ollama context "
+            "The output allowance must be smaller than the Ollama context "
             "configured by OCEANUS_OLLAMA_NUM_CTX or the model's Oceanus default. "
             "Leave room for the prompt and tool results. No request was sent."
         )
@@ -302,6 +325,17 @@ def call_completion(
     if thinking is not None:
         # Use Ollama's native field so LiteLLM preserves the named thinking level
         extra_options["think"] = thinking
+
+    # Omit the option when the caller wants the provider's normal timeout
+    if timeout_seconds is not None:
+        extra_options["timeout"] = timeout_seconds
+
+    if not allow_retries:
+        # Disable SDK retries and LiteLLM's outer retry policy
+        extra_options["max_retries"] = 0
+        extra_options["num_retries"] = 0
+        extra_options["retry_policy"] = {"DefaultRetries": 0}
+
     response = completion(
         model=model,
         messages=request_messages,
