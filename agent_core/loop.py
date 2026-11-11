@@ -4,10 +4,13 @@ from collections.abc import Callable
 from pathlib import Path
 from copy import deepcopy
 
-from agent_core.model_client import call_model, DEFAULT_MODEL, ModelResponseError
+from agent_core.model_client import (
+    call_model, DEFAULT_MODEL, ModelResponseError, ModelOutputTruncatedError,
+)
 from agent_core.tools.registry import get_tool_function, get_tool_schemas, TOOL_REGISTRY
 from agent_core.shell_sandbox import ShellSandboxError
 from agent_core.compaction_runtime import compact_before_request
+from agent_core.output_recovery import MAX_OUTPUT_RECOVERY_ATTEMPTS, build_recovery_request
 
 DEFAULT_MAX_TURNS = 20
 
@@ -170,6 +173,8 @@ def run_agent(
 
     append_message(user_message)
     compacted_this_task = False
+    recovery_attempts = 0
+    recovery_pending = False
     tool_schemas = get_tool_schemas(permitted_tools)
 
     for turn in range(1, max_turns + 1):
@@ -180,23 +185,55 @@ def run_agent(
             return "Task cancelled."
 
         try:
+            request_messages = active_messages
+            if recovery_pending:
+                request_messages = build_recovery_request(active_messages)
             # Every previous tool batch is complete before reaching this boundary
             compacted = compact_before_request(
-                active_messages, tool_schemas, model=model, reasoning=reasoning,
+                request_messages, tool_schemas, model=model, reasoning=reasoning,
                 already_compacted=compacted_this_task,
                 should_cancel=cancel_requested, on_progress=report_progress,
             )
             compacted_this_task = compacted_this_task or compacted
+            if compacted and recovery_pending:
+                # Save the summary, but remove the retry-only instruction first
+                retained_messages = deepcopy(request_messages)
+                if active_messages and active_messages[0].get("role") == "system":
+                    retained_messages[0] = deepcopy(active_messages[0])
+                else:
+                    retained_messages.pop(0)
+                active_messages[:] = retained_messages
             if cancel_requested():
                 return "Task cancelled."
             reply = call_model(
-                active_messages,
+                request_messages,
                 model=model,
                 allowed_tools=permitted_tools,
                 reasoning=reasoning,
             )
         except InterruptedError:
             return "Task cancelled."
+        except ModelOutputTruncatedError as error:
+            if cancel_requested():
+                return "Task cancelled."
+            if recovery_attempts >= MAX_OUTPUT_RECOVERY_ATTEMPTS:
+                return (
+                    str(error) + " Automatic output recovery was already used for this task; "
+                    "no further retry was sent."
+                )
+            if turn >= max_turns:
+                return (
+                    str(error) + " No recovery request was sent because "
+                    "the task's turn limit was reached."
+                )
+
+            recovery_attempts += 1
+            recovery_pending = True
+            report_progress(
+                "Output limit reached. Retrying once with guidance for a smaller, complete response. "
+                "The retry uses the next model turn; reasoning and output limits are unchanged."
+            )
+            continue
         # For token limits and failed compaction
         except ModelResponseError as error:
             if cancel_requested():
@@ -210,6 +247,10 @@ def run_agent(
         # Don't save tool requests that will not be executed
         if reply.tool_calls and turn == max_turns:
             break
+
+        if recovery_pending:
+            report_progress("Output-limit recovery returned a complete response.")
+            recovery_pending = False
 
         # Preserve agent's tool requests before adding to result
         append_message(reply.model_dump(exclude_none=True))
