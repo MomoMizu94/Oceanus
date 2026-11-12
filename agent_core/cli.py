@@ -6,7 +6,9 @@ from pathlib import Path
 
 from agent_core.loop import run_agent, DEFAULT_MAX_TURNS
 from agent_core.model_client import DEFAULT_MODEL
-from agent_core.memory.session import load_session_state, save_session
+from agent_core.memory.recovery import (
+    RECOVERY_NOTICE, has_interrupted_tools, load_recovery_session, new_session_path,
+)
 from agent_core.shell_sandbox import validate_workspace_root
 from agent_core.guardrails import approve_shell, approve_file
 from agent_core.tools.registry import TOOL_REGISTRY
@@ -15,6 +17,7 @@ from agent_core.edit_approval import approve_edit
 from agent_core.sensitive_approval import approve_sensitive_access
 from agent_core.filename_approval import approve_discovery
 from agent_core.instructions import build_system_prompt
+from agent_core.skills import discover_skills, prepare_skill_prompt
 from agent_core.web_approval import approve_web_search
 from agent_core.fetch_approval import approve_page_fetch
 
@@ -29,7 +32,8 @@ def print_tool_result(tool_name: str, result: str) -> None:
 def main() -> None:
     """ Read from CLI and run the coding agent. """
     parser = argparse.ArgumentParser(description="Run Oceanus on a coding task.")
-    parser.add_argument("task", help="The coding task, enclosed in quotes.")
+    parser.add_argument("task", nargs="?", help="The coding task. Use single quotes around prompts containing $skill-name.")
+    parser.add_argument("--list-skills", action="store_true", help="List local skills without calling a model.")
     parser.add_argument(
         "--max-turns",
         type=int,
@@ -44,16 +48,19 @@ def main() -> None:
     parser.add_argument(
         "--save",
         type=Path,
-        help="Save the updated conversation to JSON file."
+        help="Autosave checkpoints to this JSON file instead of the default session path."
     )
     parser.add_argument(
         "--resume",
         type=Path,
-        help="Load a conversation from JSON file before the task."
+        help="Resume a JSON session and autosave back to it unless --save selects another file."
     )
     parser.add_argument(
         "--workspace", type=Path,
-        help="Project folder. Required when resuming a session without workspace metadata."
+        help=(
+            "Project folder. Its root AGENTS.md is loaded before each task. "
+            "Required when resuming a session without workspace metadata."
+        )
     )
 
     tool_options = parser.add_mutually_exclusive_group()
@@ -73,6 +80,19 @@ def main() -> None:
     # Reads arguments
     arguments = parser.parse_args()
 
+    if arguments.list_skills:
+        try:
+            skills, warnings = discover_skills()
+        except (OSError, ValueError) as error:
+            parser.error(f"Could not discover skills: {error}")
+        if not skills:
+            print("No local skills found. Put skill folders in ~/.oceanus/skills.")
+        for skill in skills:
+            print(f"${skill.name}: {skill.description}\n  {skill.path}")
+        for warning in warnings:
+            print(f"Skill notice: {warning}")
+        return
+
     if arguments.no_tools:
         allowed_tools = set()
     elif arguments.tools is not None:
@@ -81,7 +101,7 @@ def main() -> None:
         allowed_tools = None
 
     # Guardrails
-    if not arguments.task.strip():
+    if arguments.task is None or not arguments.task.strip():
         parser.error("Task must not be empty!")
     if not arguments.model.strip():
         parser.error("--model must not be empty!")
@@ -103,7 +123,7 @@ def main() -> None:
     active_messages = []
     if arguments.resume is not None:
         try:
-            conversation_history, active_messages, saved_workspace = load_session_state(arguments.resume)
+            conversation_history, active_messages, saved_workspace = load_recovery_session(arguments.resume)
             if saved_workspace is None and workspace is None:
                 parser.error("This session has no project folder. Choose one with --workspace.")
             if saved_workspace is not None:
@@ -128,11 +148,27 @@ def main() -> None:
             files("agents.coding").joinpath("system_prompt.md").read_text(encoding="utf-8")
         )
         # .md files get built into the prompt
-        coding_prompt = build_system_prompt(base_prompt)
+        coding_prompt = build_system_prompt(base_prompt, workspace=workspace)
+        skill_tools = TOOL_REGISTRY if allowed_tools is None else allowed_tools
+        coding_prompt, skill_notices = prepare_skill_prompt(
+            coding_prompt, arguments.task, available_tools=skill_tools, workspace=workspace,
+        )
     except (OSError, ValueError) as error:
         parser.error(f"Could not load instructions: {error}")
 
     print("Model: ", arguments.model)
+    for notice in skill_notices:
+        print(notice)
+
+    if arguments.save is not None:
+        checkpoint_path = arguments.save
+    elif arguments.resume is not None:
+        checkpoint_path = arguments.resume
+    else:
+        checkpoint_path = new_session_path()
+    print("Recovery checkpoints:", checkpoint_path)
+    if has_interrupted_tools(conversation_history) or has_interrupted_tools(active_messages):
+        print(RECOVERY_NOTICE)
 
     # Reply
     answer = run_agent(
@@ -142,6 +178,7 @@ def main() -> None:
         model=arguments.model,
         conversation_history=conversation_history,
         active_messages=active_messages,
+        checkpoint_path=checkpoint_path,
         on_progress=print,
         on_approval=approve_shell,
         on_file_approval=approve_file,
@@ -156,14 +193,3 @@ def main() -> None:
         on_fetch_approval=approve_page_fetch,
     )
     print("Agent:", answer)
-
-    if arguments.save is not None:
-        try:
-            save_session(
-                arguments.save, conversation_history, workspace=workspace,
-                active_messages=active_messages,
-            )
-        except (OSError, ValueError) as error:
-            parser.error(f"Could not save session: {error}")
-
-        print("Session saved succesfully:", arguments.save)

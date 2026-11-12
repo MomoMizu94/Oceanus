@@ -6,7 +6,6 @@ from textual import work
 from importlib.resources import files
 from pathlib import Path
 import os
-from uuid import uuid4
 from threading import Event
 from copy import deepcopy
 import asyncio
@@ -15,7 +14,11 @@ from http.client import HTTPException
 from agent_core.loop import run_agent
 from agent_core.approval_screen import ShellApprovalScreen
 from agent_core.file_approval_screen import FileApprovalScreen
-from agent_core.memory.session import load_session_state, save_session
+from agent_core.memory.session import save_session
+from agent_core.memory.recovery import (
+    RECOVERY_NOTICE, has_interrupted_tools, load_recovery_session,
+    new_session_path, prepare_recovery_messages,
+)
 from agent_core.shell_sandbox import validate_workspace_root
 from agent_core.workspace_screen import WorkspaceScreen
 from agent_core.session_picker import SessionPicker
@@ -24,6 +27,8 @@ from agent_core.model_discovery import list_ollama_models
 from agent_core.edit_approval_screen import EditApprovalScreen
 from agent_core.sensitive_approval_screen import SensitiveApprovalScreen
 from agent_core.instructions import build_system_prompt
+from agent_core.skills import prepare_skill_prompt
+from agent_core.tools.registry import TOOL_REGISTRY
 from agent_core.web_approval_screen import WebApprovalScreen
 from agent_core.fetch_approval_screen import FetchApprovalScreen
 from agent_core.conversation_message import ConversationMessage
@@ -105,10 +110,7 @@ class OceanusApp(App):
         self.conversation_history: list[dict] = []
         self.active_messages: list[dict] | None = None
         self.workspace = Path.cwd().resolve()
-        self.session_path = (
-            Path.home() / ".local" / "share" / "oceanus" / "sessions"
-            / f"session-{uuid4().hex}.json"
-        )
+        self.session_path = new_session_path()
         self.coding_prompt = (
             files("agents.coding")
             .joinpath("system_prompt.md")
@@ -237,6 +239,8 @@ class OceanusApp(App):
         reasoning = reasoning_selector.reasoning
         reasoning_selector.set_task_busy(True)
         self.sub_title = f"{self.model} | Working..."
+        if not self.conversation_history:
+            self.write_message(f"Recovery checkpoints: {self.session_path}", kind="status")
         self.write_user_message(task, attachments)
 
         # Start a fresh draft with no undo history from the sent prompt
@@ -407,13 +411,19 @@ class OceanusApp(App):
         if active_messages is None:
             active_messages = deepcopy(history)
         try:
-            coding_prompt = build_system_prompt(self.coding_prompt)
+            coding_prompt = build_system_prompt(self.coding_prompt, workspace=self.workspace)
+            coding_prompt, skill_notices = prepare_skill_prompt(
+                coding_prompt, task, available_tools=TOOL_REGISTRY, workspace=self.workspace,
+            )
+            for notice in skill_notices:
+                self.report_progress(notice)
             answer = run_agent(
                 task,
                 model=model,
                 system_prompt=coding_prompt,
                 conversation_history=history,
                 active_messages=active_messages,
+                checkpoint_path=self.session_path,
                 on_progress=self.report_progress,
                 on_approval=self.request_approval,
                 on_file_approval=self.request_file_approval,
@@ -430,9 +440,18 @@ class OceanusApp(App):
                 reasoning=reasoning,
             )
         except Exception as error:
+            message = f"{type(error).__name__}: {error}"
+            try:
+                # A failed tool may have acted before it raised an unexpected error
+                recovered_history = prepare_recovery_messages(history)
+                recovered_active = prepare_recovery_messages(active_messages)
+                history = recovered_history
+                active_messages = recovered_active
+            except ValueError as recovery_error:
+                message += f" History could not be prepared for recovery: {recovery_error}"
             self.call_from_thread(
                 self.finish_task,
-                f"{type(error).__name__}: {error}",
+                message,
                 history,
                 failed=True,
                 active_messages=active_messages,
@@ -514,7 +533,7 @@ class OceanusApp(App):
 
         try:
             path = path.resolve()
-            history, active_messages, workspace = load_session_state(path)
+            history, active_messages, workspace = load_recovery_session(path)
             if not history:
                 raise ValueError("This session is empty!")
         except (OSError, ValueError) as error:
@@ -567,6 +586,8 @@ class OceanusApp(App):
                     self.write_message(content, kind=role)
 
         self.write_message(f"Session opened: {path}")
+        if has_interrupted_tools(history) or has_interrupted_tools(active_messages):
+            self.write_message(RECOVERY_NOTICE, kind="notice")
         conversation.scroll_end(animate=False)
         self.query_one("#task-input", PromptEditor).focus()
 

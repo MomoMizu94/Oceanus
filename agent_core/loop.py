@@ -11,6 +11,7 @@ from agent_core.tools.registry import get_tool_function, get_tool_schemas, TOOL_
 from agent_core.shell_sandbox import ShellSandboxError
 from agent_core.compaction_runtime import compact_before_request
 from agent_core.output_recovery import MAX_OUTPUT_RECOVERY_ATTEMPTS, build_recovery_request
+from agent_core.memory.recovery import CheckpointError, save_recovery_checkpoint
 
 DEFAULT_MAX_TURNS = 20
 
@@ -37,6 +38,7 @@ def run_agent(
         attachments: list[dict] | None = None,
         reasoning: str | bool | None = None,
         active_messages: list[dict] | None = None,
+        checkpoint_path: str | None = None,
         ) -> str:
     """ Run a task until model answers or hits limit """
 
@@ -154,10 +156,32 @@ def run_agent(
     if bool(active_messages) != bool(conversation_history):
         raise ValueError("Active context and full transcript must both be empty or nonempty!")
 
+    checkpoint_error: str | None = None
+
+    def write_checkpoint() -> None:
+        nonlocal checkpoint_error
+        if checkpoint_path is None or checkpoint_error is not None:
+            return
+
+        try:
+            save_recovery_checkpoint(
+                checkpoint_path,
+                conversation_history,
+                active_messages=active_messages,
+                workspace=workspace_root,
+            )
+        except CheckpointError as error:
+            # Stop this task after the first save failure
+            checkpoint_error = (
+                f"Stopped: {error}. No further tools will run in this task. "
+                "Completed actions were not undone."
+            )
+
     def append_message(message: dict) -> None:
-        # New exchanges belong in both views, but summaries belong only in active context
+        # Update both views before saving their recovery copies
         conversation_history.append(deepcopy(message))
         active_messages.append(deepcopy(message))
+        write_checkpoint()
 
     # Use supplied instructions for fresh and resumed sessions
     if system_prompt:
@@ -172,6 +196,10 @@ def run_agent(
                 history.insert(0, deepcopy(system_message))
 
     append_message(user_message)
+    # Stops model contact if submitted prompt wasn't able to be saved
+    if checkpoint_error is not None:
+        return checkpoint_error
+
     compacted_this_task = False
     recovery_attempts = 0
     recovery_pending = False
@@ -203,6 +231,11 @@ def run_agent(
                 else:
                     retained_messages.pop(0)
                 active_messages[:] = retained_messages
+            # Compaction's own checkpoint
+            if compacted:
+                write_checkpoint()
+                if checkpoint_error is not None:
+                    return checkpoint_error
             if cancel_requested():
                 return "Task cancelled."
             reply = call_model(
@@ -255,8 +288,10 @@ def run_agent(
         # Preserve agent's tool requests before adding to result
         append_message(reply.model_dump(exclude_none=True))
 
-        # If no tool requests -> task finished
+        # If no tool requests -> task finished (+ save failure)
         if not reply.tool_calls:
+            if checkpoint_error is not None:
+                return checkpoint_error
             return reply.content or ""
 
         # Show explanations regarding the requested tools
@@ -278,12 +313,16 @@ def run_agent(
             uses_structured_result = is_file_tool or tool_name in ("web_search", "fetch_page")
             file_result = None
 
-            if cancel_requested():
-                result = "Tool skipped: task cancelled before execution."
+            if checkpoint_error is not None or cancel_requested():
+                if checkpoint_error is not None:
+                    result = "Tool skipped: recovery checkpoint failed before execution."
+                else:
+                    result = "Tool skipped: task cancelled before execution."
+
                 if uses_structured_result:
                     file_result = {
                         "status": "skipped",
-                        "message": result
+                        "message": result,
                     }
             else:
                 try:
@@ -368,6 +407,12 @@ def run_agent(
             
             if on_tool_result is not None:
                 on_tool_result(tool_name, result)
+
+        if checkpoint_error is not None:
+            return checkpoint_error
+
+        if cancel_requested():
+            return "Task cancelled."
 
         if cancel_requested():
             return "Task cancelled."

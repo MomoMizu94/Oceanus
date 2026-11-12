@@ -14,6 +14,7 @@ dependencies = [
     "pydantic",
     "textual",
     "Pillow",
+    "PyYAML>=6",
 ]
 
 # Both top-level packages belong to the same project.
