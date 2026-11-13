@@ -307,6 +307,7 @@ def run_agent(
                                          "list_directory",
                                          "search_files",
                                          "edit_file",
+                                         "export_pdf",
                                          "find_files",)
             # Web content can contain errors
             # Keep operation's status separate from content returned by search
@@ -349,6 +350,14 @@ def run_agent(
                         result = tool_function(**arguments, workspace_root=workspace_root, on_discovery_approval=request_discovery_approval)
                     elif tool_name == "search_files":
                         result = tool_function(**arguments, workspace_root=workspace_root, on_search_approval=request_search_approval)
+                    elif tool_name == "export_pdf":
+                        result = tool_function(
+                            **arguments,
+                            workspace_root=workspace_root,
+                            on_file_approval=request_file_approval,
+                            on_sensitive_approval=request_sensitive_approval,
+                            should_cancel=cancel_requested,
+                        )
                     elif tool_name == "edit_file":
                         result = tool_function(
                             **arguments,

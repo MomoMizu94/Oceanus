@@ -16,6 +16,8 @@ from agent_core.tools.edits import edit_file
 from agent_core.tools.discovery import find_files
 from agent_core.tools.web import web_search, MAX_QUERY_CHARS
 from agent_core.tools.fetch import fetch_page, MAX_FETCH_URL_CHARS
+from agent_core.tools.reports import export_pdf
+from agent_core.report_limits import MAX_MARKDOWN_CHARS, MAX_REPORT_TITLE_CHARS
 
 
 TOOL_REGISTRY = {
@@ -428,6 +430,49 @@ TOOL_REGISTRY = {
                         },
                     },
                     "required": ["url"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    },
+    "export_pdf": {
+        "handler": export_pdf,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "export_pdf",
+                "description": (
+                    "Export an existing UTF-8 Markdown report to a new PDF file on Linux. "
+                    "Use write_file or edit_file first to prepare the Markdown source. "
+                    f"The source is limited to {MAX_MARKDOWN_CHARS} characters. "
+                    "Preserves tables, code, and links; images are not embedded. "
+                    "The destination must end in .pdf and its parent directory must exist. "
+                    "Never overwrites an existing file; choose a new filename for another export. "
+                    "External and sensitive reads/writes require existing file approvals. "
+                    "Rendering supports cancellation and has time, memory, and output limits. "
+                    "Returns JSON with source_path, source_sha256, path, media_type, and bytes_written "
+                    "only after publishing the completed PDF. No PDF bytes are returned to the model."
+                ),
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "source_path": {
+                            "type": "string",
+                            "description": "Existing Markdown file, absolute or relative to the workspace.",
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "New .pdf file, absolute or relative to the workspace.",
+                        },
+                        "title": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAX_REPORT_TITLE_CHARS,
+                            "description": "PDF document title, such as Research report.",
+                        },
+                    },
+                    "required": ["source_path", "path", "title"],
                     "additionalProperties": False,
                 },
             },
