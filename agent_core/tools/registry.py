@@ -16,7 +16,7 @@ from agent_core.tools.edits import edit_file
 from agent_core.tools.discovery import find_files
 from agent_core.tools.web import web_search, MAX_QUERY_CHARS
 from agent_core.tools.fetch import fetch_page, MAX_FETCH_URL_CHARS
-from agent_core.tools.reports import export_pdf
+from agent_core.tools.reports import export_pdf, export_canvas
 from agent_core.report_limits import MAX_MARKDOWN_CHARS, MAX_REPORT_TITLE_CHARS
 
 
@@ -473,6 +473,47 @@ TOOL_REGISTRY = {
                         },
                     },
                     "required": ["source_path", "path", "title"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    },
+    "export_canvas": {
+        "handler": export_canvas,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "export_canvas",
+                "description": (
+                    "Validate an existing UTF-8 JSON Canvas 1.0 source and export a new Obsidian .canvas file on Linux. "
+                    "First use write_file/edit_file to prepare JSON with nodes and edges arrays. "
+                    "Every node requires unique string id, type, integer x/y, and positive integer width/height. "
+                    "Node types: text requires text (Markdown); link requires url (HTTP/HTTPS); "
+                    "file requires file (vault-relative path), optional subpath starting #; "
+                    "group has optional label, background (vault-relative path), backgroundStyle cover/ratio/repeat. "
+                    "Nodes/edges may have color as #RRGGBB or string 1 through 6. "
+                    "Edges require unique id, fromNode, toNode referencing nodes; optional label, "
+                    "fromSide/toSide top/right/bottom/left, fromEnd/toEnd none/arrow. "
+                    "Put groups first for stacking; position cards within groups using coordinates. "
+                    "Limits: 200,000 source characters, 200 nodes, 500 edges, 16,000 characters per text node, "
+                    "coordinates +/-1,000,000, dimensions 1..100,000; unknown fields and duplicate IDs/JSON keys rejected. "
+                    "For citations prefer text nodes with Markdown links. Obsidian embeds link nodes as live web pages, "
+                    "which may display ads; use link nodes only for explicitly requested web embeds. "
+                    "Use roomy text cards, group padding, and a few short group-to-group edge labels. "
+                    "No referenced files or URLs are opened or copied during export. "
+                    "File paths must use forward slashes without absolute paths, traversal, colon or #. "
+                    "No auto-layout or claim verification. Destination parent must exist; never overwrites existing files. "
+                    "Uses normal external/sensitive file approvals. Returns source_path, source_sha256, path, "
+                    "media_type, bytes_written, node_count and edge_count after successful saving."
+                ),
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "source_path": {"type": "string", "description": "Existing Canvas JSON source, absolute or workspace-relative."},
+                        "path": {"type": "string", "description": "New .canvas destination, absolute or workspace-relative."},
+                    },
+                    "required": ["source_path", "path"],
                     "additionalProperties": False,
                 },
             },

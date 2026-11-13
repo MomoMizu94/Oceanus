@@ -308,6 +308,7 @@ def run_agent(
                                          "search_files",
                                          "edit_file",
                                          "export_pdf",
+                                         "export_canvas",
                                          "find_files",)
             # Web content can contain errors
             # Keep operation's status separate from content returned by search
@@ -350,7 +351,7 @@ def run_agent(
                         result = tool_function(**arguments, workspace_root=workspace_root, on_discovery_approval=request_discovery_approval)
                     elif tool_name == "search_files":
                         result = tool_function(**arguments, workspace_root=workspace_root, on_search_approval=request_search_approval)
-                    elif tool_name == "export_pdf":
+                    elif tool_name in ("export_pdf", "export_canvas"):
                         result = tool_function(
                             **arguments,
                             workspace_root=workspace_root,
