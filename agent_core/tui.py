@@ -35,6 +35,8 @@ from agent_core.conversation_message import ConversationMessage
 from agent_core.wal_theme import load_wal_theme
 from agent_core.prompt_editor import PromptEditor
 from agent_core.reasoning_selector import ReasoningSelector
+from agent_core.permission_selector import PermissionSelector
+from agent_core.permissions import PermissionMode, permission_instructions
 
 
 class OceanusApp(App):
@@ -61,8 +63,17 @@ class OceanusApp(App):
         align-horizontal: center;
     }
 
+    #workspace-controls {
+        height: 1;
+    }
+
+    #permission-select {
+        width: 34;
+    }
+
     #workspace-path {
-        height: auto;
+        width: 1fr;
+        height: 1;
         padding: 0 2;
         color: $text-muted;
     }
@@ -121,7 +132,11 @@ class OceanusApp(App):
     def compose(self) -> ComposeResult:
         """ Supplied widgets on screen """
         yield Header()
-        yield Static(str(self.workspace), id="workspace-path", markup=False)
+        with Horizontal(id="workspace-controls"):
+            workspace_label = Static(str(self.workspace), id="workspace-path", markup=False)
+            workspace_label.tooltip = str(self.workspace)
+            yield workspace_label
+            yield PermissionSelector(id="permission-select", compact=True)
         # Drop-down model selection
         with Horizontal(id="model-controls"):
             yield Select(
@@ -238,6 +253,9 @@ class OceanusApp(App):
         reasoning_selector = self.query_one(ReasoningSelector)
         reasoning = reasoning_selector.reasoning
         reasoning_selector.set_task_busy(True)
+        permission_selector = self.query_one(PermissionSelector)
+        permission_mode = permission_selector.mode
+        permission_selector.set_task_busy(True)
         self.sub_title = f"{self.model} | Working..."
         if not self.conversation_history:
             self.write_message(f"Recovery checkpoints: {self.session_path}", kind="status")
@@ -251,6 +269,7 @@ class OceanusApp(App):
             task, deepcopy(self.conversation_history), self.model,
             attachments=attachments,
             reasoning=reasoning,
+            permission_mode=permission_mode,
             active_messages=deepcopy(self.active_messages),
         )
 
@@ -405,6 +424,7 @@ class OceanusApp(App):
         self, task: str, history: list[dict], model: str,
         *, attachments: list[dict] | None = None,
         reasoning: str | bool | None = None,
+        permission_mode: PermissionMode = PermissionMode.ASK,
         active_messages: list[dict] | None = None,
     ) -> None:
         """ Runs the prompt. Executed in a background thread. """
@@ -415,6 +435,7 @@ class OceanusApp(App):
             coding_prompt, skill_notices = prepare_skill_prompt(
                 coding_prompt, task, available_tools=TOOL_REGISTRY, workspace=self.workspace,
             )
+            coding_prompt += permission_instructions(permission_mode)
             for notice in skill_notices:
                 self.report_progress(notice)
             answer = run_agent(
@@ -438,6 +459,7 @@ class OceanusApp(App):
                 on_fetch_approval=self.request_fetch_approval,
                 attachments=attachments,
                 reasoning=reasoning,
+                permission_mode=permission_mode,
             )
         except Exception as error:
             message = f"{type(error).__name__}: {error}"
@@ -479,6 +501,7 @@ class OceanusApp(App):
         self.sub_title = self.model
         self.query_one("#model-select", Select).disabled = False
         self.query_one(ReasoningSelector).set_task_busy(False)
+        self.query_one(PermissionSelector).set_task_busy(False)
 
         task_input = self.query_one("#task-input", PromptEditor)
         task_input.disabled = False
@@ -566,7 +589,10 @@ class OceanusApp(App):
             return
 
         self.workspace = workspace
-        self.query_one("#workspace-path", Static).update(str(workspace))
+        self.query_one(PermissionSelector).value = PermissionMode.ASK.value
+        workspace_label = self.query_one("#workspace-path", Static)
+        workspace_label.update(str(workspace))
+        workspace_label.tooltip = str(workspace)
         self.conversation_history = history
         if active_messages is None:
             active_messages = deepcopy(history)

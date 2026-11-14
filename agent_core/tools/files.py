@@ -26,10 +26,16 @@ def write_file(
         *,
         workspace_root: Path,
         on_file_approval: Callable[[str, str], bool] | None = None,
-        on_sensitive_approval: Callable[[str, str, str], bool] | None = None
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
+        require_write_approval: bool = False
 ) -> str:
     """ Create or overwrite a UTF-8 file, request approval for access. """
-    file_path = resolve_workspace_path(path, workspace_root, operation="write", on_file_approval=on_file_approval, on_sensitive_approval=on_sensitive_approval)
+    file_path = resolve_workspace_path(
+        path, workspace_root, operation="write",
+        on_file_approval=on_file_approval,
+        on_sensitive_approval=on_sensitive_approval,
+        require_write_approval=require_write_approval,
+    )
     text_written = file_path.write_text(
         content,
         encoding="utf-8"

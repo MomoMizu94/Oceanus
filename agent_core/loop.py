@@ -12,6 +12,7 @@ from agent_core.shell_sandbox import ShellSandboxError
 from agent_core.compaction_runtime import compact_before_request
 from agent_core.output_recovery import MAX_OUTPUT_RECOVERY_ATTEMPTS, build_recovery_request
 from agent_core.memory.recovery import CheckpointError, save_recovery_checkpoint
+from agent_core.permissions import PermissionMode, automatically_approve
 
 DEFAULT_MAX_TURNS = 20
 
@@ -39,8 +40,30 @@ def run_agent(
         reasoning: str | bool | None = None,
         active_messages: list[dict] | None = None,
         checkpoint_path: str | None = None,
+        permission_mode: PermissionMode | str = PermissionMode.ASK,
         ) -> str:
     """ Run a task until model answers or hits limit """
+
+    permission_mode = PermissionMode(permission_mode)
+
+    def decide(
+        action: str, callback: Callable[..., bool] | None, *arguments,
+        path: str = "", command: str = "",
+    ) -> bool:
+        if cancel_requested():
+            return False
+        auto_approved = automatically_approve(
+            permission_mode, action, workspace_root, path=path, command=command,
+        )
+        if auto_approved:
+            return not cancel_requested()
+        if callback is None:
+            return False
+        decision = callback(*arguments)
+        return decision is True and not cancel_requested()
+
+    def request_shell_approval(command: str, working_directory: str) -> bool:
+        return decide("shell", on_approval, command, working_directory, command=command)
 
     def report_progress(message: str) -> None:
         """ Helper function for callback """
@@ -55,69 +78,25 @@ def run_agent(
         return should_cancel()
 
     def request_file_approval(operation: str, path: str) -> bool:
-        """ Helper function for approval requests. """
-        if cancel_requested() or on_file_approval is None:
-            return False
-
-        decision = on_file_approval(operation, path)
-        return decision is True and not cancel_requested()
+        return decide("file", on_file_approval, operation, path)
 
     def request_search_approval(path: str, query: str, pattern: str) -> bool:
-        """ Helper for seach approvals """
-        if cancel_requested() or on_search_approval is None:
-            return False
-
-        decision = on_search_approval(path, query, pattern)
-        return decision is True and not cancel_requested()
+        return decide("file", on_search_approval, path, query, pattern)
 
     def request_edit_approval(path: str, diff: str) -> bool:
-        if cancel_requested() or on_edit_approval is None:
-            return False
+        return decide("edit", on_edit_approval, path, diff, path=path)
 
-        decision = on_edit_approval(path, diff)
-        return decision is True and not cancel_requested()
-
-    def request_sensitive_approval(opeation: str, path: str, reason: str) -> bool:
-        if cancel_requested() or on_sensitive_approval is None:
-            return False
-
-        decision = on_sensitive_approval(opeation, path, reason)
-        return decision is True and not cancel_requested()
+    def request_sensitive_approval(operation: str, path: str, reason: str) -> bool:
+        return decide("sensitive", on_sensitive_approval, operation, path, reason)
 
     def request_discovery_approval(path: str, pattern: str) -> bool:
-        if cancel_requested() or on_discovery_approval is None:
-            return False
-
-        decision = on_discovery_approval(path, pattern)
-        if decision is not True:
-            return False
-
-        if cancel_requested():
-            return False
-
-        return True
+        return decide("file", on_discovery_approval, path, pattern)
 
     def request_web_approval(query: str) -> bool:
-        # Don't open approval dialog for already cancelled task
-        if cancel_requested() or on_web_approval is None:
-            return False
-
-        decision = on_web_approval(query)
-        if decision is not True:
-            return False
-
-        # Cancellation can arrive while user is deciding
-        if cancel_requested():
-            return False
-
-        return True
+        return decide("web", on_web_approval, query)
 
     def request_fetch_approval(url: str) -> bool:
-        if cancel_requested() or on_fetch_approval is None:
-            return False
-
-        decision = on_fetch_approval(url)
-        return decision is True and not cancel_requested()
+        return decide("web", on_fetch_approval, url)
 
     if max_turns < 1:
         raise ValueError ("max_turns must be at least 1")
@@ -336,7 +315,10 @@ def run_agent(
                     tool_function = get_tool_function(tool_name)
                     
                     if tool_name == "run_shell":
-                        result = tool_function(**arguments, on_approval=on_approval)
+                        result = tool_function(
+                            **arguments, on_approval=request_shell_approval,
+                            full_access=permission_mode == PermissionMode.FULL,
+                        )
                     elif tool_name == "web_search":
                         # Supply Oceanus' callback
                         result = tool_function(**arguments, on_web_approval=request_web_approval)
@@ -354,10 +336,18 @@ def run_agent(
                     elif tool_name in ("export_pdf", "export_canvas"):
                         result = tool_function(
                             **arguments,
+                            require_write_approval=permission_mode == PermissionMode.READ_ONLY,
                             workspace_root=workspace_root,
                             on_file_approval=request_file_approval,
                             on_sensitive_approval=request_sensitive_approval,
                             should_cancel=cancel_requested,
+                        )
+                    elif tool_name == "write_file":
+                        result = tool_function(
+                            **arguments, workspace_root=workspace_root,
+                            on_file_approval=request_file_approval,
+                            on_sensitive_approval=request_sensitive_approval,
+                            require_write_approval=permission_mode == PermissionMode.READ_ONLY,
                         )
                     elif tool_name == "edit_file":
                         result = tool_function(

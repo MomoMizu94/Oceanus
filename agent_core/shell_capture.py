@@ -6,6 +6,7 @@ import signal
 import subprocess
 import time
 from io import StringIO
+from contextlib import nullcontext
 from pathlib import Path
 
 from agent_core.output_store import MAX_OUTPUT_CHARS
@@ -71,7 +72,8 @@ def capture_shell(
         *,
         cwd: str,
         timeout: float = 60,
-        max_chars: int = MAX_OUTPUT_CHARS
+        max_chars: int = MAX_OUTPUT_CHARS,
+        full_access: bool = False,
 ) -> dict:
     """ Collect bounded output from an already approved command on POSIX """
 
@@ -85,25 +87,35 @@ def capture_shell(
     timed_out = False
     capture_incomplete = False
 
-    # Resolce and check the project
+    if type(full_access) is not bool:
+        raise ValueError("full_access must be a boolean")
     root = validate_workspace_root(Path(cwd))
-    arguments = build_sandbox_base_args(working_directory=str(root))
+    if full_access:
+        # Explicit host execution keeps the same output bounds and deadline
+        arguments = ["/bin/sh", "-c", command]
+        launch_directory = str(root)
+        environment = os.environ.copy()
+        mount_context = nullcontext({"arguments": [], "pass_fds": ()})
+    else:
+        arguments = build_sandbox_base_args(working_directory=str(root))
+        launch_directory = "/"
+        environment = build_shell_environment()
+        mount_context = workspace_mount_args(root)
 
     with (
-        workspace_mount_args(root) as workspace,
+        mount_context as workspace,
         selectors.DefaultSelector() as reader
     ):
-        arguments.extend(workspace["arguments"])
-        arguments.extend(["--", "/bin/sh", "-c", command])
+        if not full_access:
+            arguments.extend(workspace["arguments"])
+            arguments.extend(["--", "/bin/sh", "-c", command])
 
-        # Launch bwrap with a clean env
-        # Python launches bwrap, bwrap creates isolated env
         process = subprocess.Popen(
             arguments,
             shell=False,
-            cwd="/",
-            env=build_shell_environment(),
-            # Give brwap only the dir handle
+            cwd=launch_directory,
+            env=environment,
+            # Sandboxed execution inherits only its workspace handle
             pass_fds=workspace["pass_fds"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,

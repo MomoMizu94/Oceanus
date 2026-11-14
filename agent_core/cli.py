@@ -5,6 +5,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from agent_core.loop import run_agent, DEFAULT_MAX_TURNS
+from agent_core.permissions import PermissionMode, MODE_LABELS, permission_instructions
 from agent_core.model_client import DEFAULT_MODEL
 from agent_core.memory.recovery import (
     RECOVERY_NOTICE, has_interrupted_tools, load_recovery_session, new_session_path,
@@ -61,6 +62,12 @@ def main() -> None:
             "Project folder. Its root AGENTS.md is loaded before each task. "
             "Required when resuming a session without workspace metadata."
         )
+    )
+
+    parser.add_argument(
+        "--permission-mode", choices=[mode.value for mode in PermissionMode],
+        default=PermissionMode.ASK.value,
+        help="Approval policy: ask (default), auto, full (host access), or read-only.",
     )
 
     tool_options = parser.add_mutually_exclusive_group()
@@ -156,7 +163,10 @@ def main() -> None:
     except (OSError, ValueError) as error:
         parser.error(f"Could not load instructions: {error}")
 
+    permission_mode = PermissionMode(arguments.permission_mode)
+    coding_prompt += permission_instructions(permission_mode)
     print("Model: ", arguments.model)
+    print("Permissions:", MODE_LABELS[permission_mode])
     for notice in skill_notices:
         print(notice)
 
@@ -174,6 +184,7 @@ def main() -> None:
     answer = run_agent(
         arguments.task,
         max_turns=arguments.max_turns,
+        permission_mode=permission_mode,
         system_prompt=coding_prompt,
         model=arguments.model,
         conversation_history=conversation_history,

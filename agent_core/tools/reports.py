@@ -60,6 +60,7 @@ def _export_report(
     on_file_approval: Callable[[str, str], bool] | None = None,
     on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    require_write_approval: bool = False,
 ) -> str:
     def check_cancelled() -> None:
         if should_cancel is not None and should_cancel():
@@ -111,6 +112,7 @@ def _export_report(
     target = resolve_workspace_path(
         str(requested), root, operation="write",
         on_file_approval=approve_file, on_sensitive_approval=approve_sensitive,
+        require_write_approval=require_write_approval,
     )
     _require_missing_file(target)
     directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -164,6 +166,7 @@ def export_pdf(
     on_file_approval: Callable[[str, str], bool] | None = None,
     on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    require_write_approval: bool = False,
 ) -> str:
     if not isinstance(title, str) or not title.strip() or "\x00" in title or len(title) > MAX_REPORT_TITLE_CHARS:
         raise ValueError("PDF title must be nonblank text of at most 200 characters without NUL characters.")
@@ -180,7 +183,7 @@ def export_pdf(
         source_path, path, extension=".pdf", media_type="application/pdf",
         source_limit=MAX_MARKDOWN_CHARS, build=build, workspace_root=workspace_root,
         on_file_approval=on_file_approval, on_sensitive_approval=on_sensitive_approval,
-        should_cancel=should_cancel,
+        should_cancel=should_cancel, require_write_approval=require_write_approval,
     )
 
 
@@ -192,10 +195,11 @@ def export_canvas(
     on_file_approval: Callable[[str, str], bool] | None = None,
     on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    require_write_approval: bool = False,
 ) -> str:
     return _export_report(
         source_path, path, extension=".canvas", media_type="application/json",
         source_limit=MAX_CANVAS_SOURCE_CHARS, build=build_canvas_document, workspace_root=workspace_root,
         on_file_approval=on_file_approval, on_sensitive_approval=on_sensitive_approval,
-        should_cancel=should_cancel,
+        should_cancel=should_cancel, require_write_approval=require_write_approval,
     )

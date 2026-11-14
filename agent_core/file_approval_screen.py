@@ -66,7 +66,7 @@ class FileApprovalScreen(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="file-dialog"):
-            yield Static("Allow this external filesystem operation?")
+            yield Static("Allow this filesystem operation?")
             with VerticalScroll(id="file-details"):
                 if self.operation == "search":
                     details = describe_search(

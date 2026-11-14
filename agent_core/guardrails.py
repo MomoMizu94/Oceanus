@@ -26,7 +26,8 @@ def approve_file(operation: str, path: str) -> bool:
     if operation not in ("read", "write", "list"):
         return False
 
-    print("\nExternal file access requested:")
+    scope = "Workspace" if Path(path).is_relative_to(Path.cwd()) else "External"
+    print(f"\n{scope} file access requested:")
     print("Operation:", operation)
     print("Resolved path:", path)
 
@@ -52,7 +53,8 @@ def resolve_workspace_path(
         *,
         operation: str = "read",
         on_file_approval: Callable[[str, str], bool] | None = None,
-        on_sensitive_approval: Callable[[str, str, str], bool] | None = None
+        on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
+        require_write_approval: bool = False,
         ) -> Path:
     """ Check sensitive-path approval & external access before returning a path """
     root = workspace_root.resolve()
@@ -76,11 +78,13 @@ def resolve_workspace_path(
             raise PermissionError(f"Sensitive {operation} denied: {target}")
         check_path_unchanged()
 
-    if not target.is_relative_to(root):
+    external = not target.is_relative_to(root)
+    if external or (operation == "write" and require_write_approval):
+        scope = "External" if external else "Workspace"
         if on_file_approval is None:
-            raise PermissionError(f"External {operation} requires approval: {target}")
+            raise PermissionError(f"{scope} {operation} requires approval: {target}")
         if on_file_approval(operation, str(target)) is not True:
-            raise PermissionError(f"External {operation} denied: {target}")
+            raise PermissionError(f"{scope} {operation} denied: {target}")
         check_path_unchanged()
 
     return target

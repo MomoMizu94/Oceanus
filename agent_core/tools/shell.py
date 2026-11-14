@@ -1,4 +1,4 @@
-# Implement run_shell and return command output after manual approval
+# Run commands after the runtime approves them
 import json
 from pathlib import Path
 from collections.abc import Callable
@@ -52,8 +52,11 @@ def _preview_output(output: dict, *, capture_incomplete: bool = False) -> str:
     return result
 
 
-def run_shell(command: str, *, on_approval: Callable[[str, str], bool] | None = None) -> str:
-    """ Run approved shell commmand after approval """
+def run_shell(command: str, *, on_approval: Callable[[str, str], bool] | None = None,
+              full_access: bool = False) -> str:
+    """ Run a command after its approval callback accepts it """
+    if type(full_access) is not bool:
+        raise ValueError("full_access must be a boolean")
     working_directory = str(Path.cwd())
 
     if on_approval is None:
@@ -61,7 +64,10 @@ def run_shell(command: str, *, on_approval: Callable[[str, str], bool] | None = 
     if on_approval(command, working_directory) is not True:
         return "Command denied by the user. Nothing was executed."
 
-    captured = capture_shell(command, cwd=working_directory, timeout=60)
+    options = {}
+    if full_access:
+        options["full_access"] = True
+    captured = capture_shell(command, cwd=working_directory, timeout=60, **options)
 
     if captured["timed_out"]:
         status = (
