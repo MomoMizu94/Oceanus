@@ -2,12 +2,31 @@
 from pathlib import Path
 from collections.abc import Callable
 import json
+import io
 
 from agent_core.guardrails import resolve_workspace_path
 
 
 MAX_READ_CHARS = 16000
 MAX_READ_LINES = 200
+
+
+def _open_text_file(path: Path) -> io.TextIOWrapper:
+    """ Decode a BOM-marked UTF-16 file or strict UTF-8 after access approval """
+    source = path.open("rb")
+    try:
+        prefix = source.read(4)
+        source.seek(0)
+        encoding = "utf-8"
+        if prefix.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")):
+            raise ValueError("UTF-32 text is unsupported; use a UTF-8 copy in the workspace.")
+        if prefix.startswith((b"\xff\xfe", b"\xfe\xff")):
+            encoding = "utf-16"
+        return io.TextIOWrapper(source, encoding=encoding, errors="strict", newline="")
+    except BaseException:
+        source.close()
+        raise
+
 
 def read_file(
         path: str,
@@ -63,7 +82,7 @@ def read_file_page(
     file_path = resolve_workspace_path(path, workspace_root, operation="read", on_file_approval=on_file_approval, on_sensitive_approval=on_sensitive_approval)
 
     # Skip to requested character offset
-    with file_path.open("r", encoding="utf-8", newline="") as source:
+    with _open_text_file(file_path) as source:
         remaining = offset
         while remaining:
             skipped = source.read(min(remaining, 4096))
@@ -117,7 +136,7 @@ def read_file_lines(
     lines = []
     content_chars = 0
 
-    with file_path.open("r", encoding="utf-8", newline="") as source:
+    with _open_text_file(file_path) as source:
         # Start from the beginning to count lines
         for number in range(1, end_line + 1):
             read_limit = MAX_READ_CHARS

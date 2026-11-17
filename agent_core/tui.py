@@ -11,7 +11,7 @@ from copy import deepcopy
 import asyncio
 from http.client import HTTPException
 
-from agent_core.loop import run_agent
+from agent_core.loop import run_agent, DEFAULT_MAX_TURNS
 from agent_core.approval_screen import ShellApprovalScreen
 from agent_core.file_approval_screen import FileApprovalScreen
 from agent_core.memory.session import save_session
@@ -36,6 +36,7 @@ from agent_core.wal_theme import load_wal_theme
 from agent_core.prompt_editor import PromptEditor
 from agent_core.reasoning_selector import ReasoningSelector
 from agent_core.permission_selector import PermissionSelector
+from agent_core.turn_selector import TurnSelector
 from agent_core.permissions import PermissionMode, permission_instructions
 
 
@@ -69,6 +70,10 @@ class OceanusApp(App):
 
     #permission-select {
         width: 34;
+    }
+
+    #turn-select {
+        width: 16;
     }
 
     #workspace-path {
@@ -137,6 +142,7 @@ class OceanusApp(App):
             workspace_label.tooltip = str(self.workspace)
             yield workspace_label
             yield PermissionSelector(id="permission-select", compact=True)
+            yield TurnSelector(id="turn-select", compact=True)
         # Drop-down model selection
         with Horizontal(id="model-controls"):
             yield Select(
@@ -256,6 +262,9 @@ class OceanusApp(App):
         permission_selector = self.query_one(PermissionSelector)
         permission_mode = permission_selector.mode
         permission_selector.set_task_busy(True)
+        turn_selector = self.query_one(TurnSelector)
+        max_turns = turn_selector.max_turns
+        turn_selector.set_task_busy(True)
         self.sub_title = f"{self.model} | Working..."
         if not self.conversation_history:
             self.write_message(f"Recovery checkpoints: {self.session_path}", kind="status")
@@ -271,6 +280,7 @@ class OceanusApp(App):
             reasoning=reasoning,
             permission_mode=permission_mode,
             active_messages=deepcopy(self.active_messages),
+            max_turns=max_turns,
         )
 
     def report_progress(self, message: str) -> None:
@@ -435,6 +445,7 @@ class OceanusApp(App):
         reasoning: str | bool | None = None,
         permission_mode: PermissionMode = PermissionMode.ASK,
         active_messages: list[dict] | None = None,
+        max_turns: int = DEFAULT_MAX_TURNS,
     ) -> None:
         """ Runs the prompt. Executed in a background thread. """
         if active_messages is None:
@@ -470,6 +481,7 @@ class OceanusApp(App):
                 attachments=attachments,
                 reasoning=reasoning,
                 permission_mode=permission_mode,
+                max_turns=max_turns,
             )
         except Exception as error:
             message = f"{type(error).__name__}: {error}"
@@ -512,6 +524,7 @@ class OceanusApp(App):
         self.query_one("#model-select", Select).disabled = False
         self.query_one(ReasoningSelector).set_task_busy(False)
         self.query_one(PermissionSelector).set_task_busy(False)
+        self.query_one(TurnSelector).set_task_busy(False)
 
         task_input = self.query_one("#task-input", PromptEditor)
         task_input.disabled = False

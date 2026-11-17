@@ -14,6 +14,7 @@ dependencies = [
     "pydantic",
     "textual",
     "Pillow",
+    "matplotlib>=3.10,<4",
     "PyYAML>=6",
     "markdown-it-py",
     "linkify-it-py",

@@ -15,6 +15,8 @@ from agent_core.report_limits import (
     MAX_PDF_BYTES,
     MAX_REPORT_JOB_BYTES,
     MAX_REPORT_TITLE_CHARS,
+    MAX_REPORT_IMAGES,
+    MAX_REPORT_IMAGE_PATH_CHARS,
     REPORT_EXIT_BLOCKED,
     REPORT_EXIT_FAILED,
     REPORT_EXIT_INVALID,
@@ -33,7 +35,7 @@ REPORT_WORKER_START = (
 )
 
 
-def _encode_report_job(markdown: str, title: str) -> bytes:
+def _encode_report_job(markdown: str, title: str, images: dict | None = None) -> bytes:
     for value, limit, label in (
         (markdown, MAX_MARKDOWN_CHARS, "Markdown"),
         (title, MAX_REPORT_TITLE_CHARS, "title"),
@@ -43,7 +45,21 @@ def _encode_report_job(markdown: str, title: str) -> bytes:
         if not value.strip() or "\x00" in value:
             raise ValueError(f"Report {label} must be nonblank and contain no NUL characters!")
 
-    job = json.dumps({"markdown": markdown, "title": title}, ensure_ascii=True)
+    payload = {"markdown": markdown, "title": title}
+    if images is not None:
+        if not isinstance(images, dict) or len(images) > MAX_REPORT_IMAGES:
+            raise ValueError('Invalid report image collection.')
+        image_chars = 0
+        for reference, encoded_image in images.items():
+            if not isinstance(reference, str) or not 1 <= len(reference) <= MAX_REPORT_IMAGE_PATH_CHARS:
+                raise ValueError('Invalid report image reference.')
+            if not isinstance(encoded_image, str):
+                raise ValueError('Invalid report image payload.')
+            image_chars += len(encoded_image)
+        if image_chars > MAX_REPORT_JOB_BYTES:
+            raise ValueError('PDF image request is too large!')
+        payload['images'] = images
+    job = json.dumps(payload, ensure_ascii=True)
     encoded = job.encode("ascii")
     if len(encoded) > MAX_REPORT_JOB_BYTES:
         raise ValueError("PDF worker request is too large!")
@@ -90,6 +106,7 @@ def render_report_pdf_in_worker(
     title: str = "Oceanus report",
     should_cancel: Callable[[], bool] | None = None,
     timeout: float = REPORT_TOTAL_TIMEOUT,
+    images: dict | None = None,
 ) -> bytes:
     if not sys.platform.startswith("linux"):
         raise OSError("PDF worker control currently requires Linux!")
@@ -98,8 +115,26 @@ def render_report_pdf_in_worker(
 
     deadline = time.monotonic() + timeout
     _check_report_stop(deadline, should_cancel)
-    job = _encode_report_job(markdown, title)
+    job = _encode_report_job(markdown, title, images)
     _check_report_stop(deadline, should_cancel)
+    return _run_report_worker(job, deadline, should_cancel, output_format='pdf')
+
+
+def render_chart_png_in_worker(spec: dict, *, should_cancel=None, timeout=REPORT_TOTAL_TIMEOUT) -> bytes:
+    if not sys.platform.startswith('linux'):
+        raise OSError('Chart worker requires Linux.')
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError('Chart timeout must be a positive finite number.')
+    deadline = time.monotonic() + timeout
+    _check_report_stop(deadline, should_cancel)
+    job = json.dumps({'chart': spec}, ensure_ascii=True).encode('ascii')
+    if len(job) > 64_000:
+        raise ValueError('Chart specification exceeds 64,000 bytes.')
+    _check_report_stop(deadline, should_cancel)
+    return _run_report_worker(job, deadline, should_cancel, output_format='png')
+
+
+def _run_report_worker(job, deadline, should_cancel, *, output_format):
     package_root = Path(__file__).resolve().parent.parent
     arguments = [sys.executable, "-I", "-c", REPORT_WORKER_START, str(package_root)]
 
@@ -155,10 +190,14 @@ def render_report_pdf_in_worker(
             _check_report_exit(process.returncode)
             if sent != len(job):
                 raise OSError("PDF worker did not receive the complete request.")
-            pdf = bytes(reply)
-            if not pdf.startswith(b"%PDF-") or not pdf.rstrip().endswith(b"%%EOF"):
-                raise OSError("PDF worker returned an incomplete or invalid PDF.")
-            return pdf
+            content = bytes(reply)
+            if output_format == 'pdf':
+                valid = content.startswith(b'%PDF-') and content.rstrip().endswith(b'%%EOF')
+            else:
+                valid = content.startswith(b'\x89PNG\r\n\x1a\n') and content.endswith(b'IEND\xaeB`\x82')
+            if not valid:
+                raise OSError(f'Report worker returned incomplete or invalid {output_format.upper()}.')
+            return content
         finally:
             try:
                 _stop_report_worker(process)

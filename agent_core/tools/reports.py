@@ -10,6 +10,7 @@ from agent_core.guardrails import resolve_workspace_path
 from agent_core.report_canvas import build_canvas_document, MAX_CANVAS_SOURCE_CHARS
 from agent_core.report_limits import MAX_MARKDOWN_CHARS, MAX_PDF_BYTES, MAX_REPORT_TITLE_CHARS
 from agent_core.report_runtime import render_report_pdf_in_worker
+from agent_core.report_images import collect_report_images
 from agent_core.tools.edits import read_edit_snapshot
 
 
@@ -61,6 +62,7 @@ def _export_report(
     on_sensitive_approval: Callable[[str, str, str], bool] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     require_write_approval: bool = False,
+    read_snapshot: Callable | None = None,
 ) -> str:
     def check_cancelled() -> None:
         if should_cancel is not None and should_cancel():
@@ -100,8 +102,10 @@ def _export_report(
             sensitive_writes.add((resolved, reason))
         return decision is True
 
-    # Reuse bounded UTF-8 reading and its external/sensitive approval checks
-    snapshot = read_edit_snapshot(
+    # Each reader enforces its size limit and external/sensitive approvals
+    if read_snapshot is None:
+        read_snapshot = read_edit_snapshot
+    snapshot = read_snapshot(
         source_path, workspace_root=root,
         on_file_approval=approve_file, on_sensitive_approval=approve_sensitive,
     )
@@ -171,19 +175,37 @@ def export_pdf(
     if not isinstance(title, str) or not title.strip() or "\x00" in title or len(title) > MAX_REPORT_TITLE_CHARS:
         raise ValueError("PDF title must be nonblank text of at most 200 characters without NUL characters.")
 
+    source_location = None
+
+    def read_markdown(source, **options):
+        nonlocal source_location
+        snapshot = read_edit_snapshot(source, **options)
+        source_location = Path(snapshot['path'])
+        return snapshot
+
     def build(markdown: str) -> tuple[bytes, dict]:
-        pdf = render_report_pdf_in_worker(markdown, title=title, should_cancel=should_cancel)
+        images, metadata = collect_report_images(
+            markdown, source_location, workspace_root=workspace_root.resolve(),
+            on_file_approval=on_file_approval, on_sensitive_approval=on_sensitive_approval,
+            should_cancel=should_cancel,
+        )
+        options = {'title': title, 'should_cancel': should_cancel}
+        if images:
+            options['images'] = images
+        pdf = render_report_pdf_in_worker(markdown, **options)
         if not isinstance(pdf, bytes) or len(pdf) > MAX_PDF_BYTES:
             raise OSError("PDF worker returned invalid or oversized output.")
         if not pdf.startswith(b"%PDF-") or not pdf.rstrip().endswith(b"%%EOF"):
             raise OSError("PDF worker returned incomplete output.")
-        return pdf, {}
+        details = {'images': metadata} if metadata else {}
+        return pdf, details
 
     return _export_report(
         source_path, path, extension=".pdf", media_type="application/pdf",
         source_limit=MAX_MARKDOWN_CHARS, build=build, workspace_root=workspace_root,
         on_file_approval=on_file_approval, on_sensitive_approval=on_sensitive_approval,
         should_cancel=should_cancel, require_write_approval=require_write_approval,
+        read_snapshot=read_markdown,
     )
 
 

@@ -10,11 +10,12 @@ from agent_core.model_client import (
 from agent_core.tools.registry import get_tool_function, get_tool_schemas, TOOL_REGISTRY
 from agent_core.shell_sandbox import ShellSandboxError
 from agent_core.compaction_runtime import compact_before_request
+from agent_core.turn_budget import build_turn_budget_request
 from agent_core.output_recovery import MAX_OUTPUT_RECOVERY_ATTEMPTS, build_recovery_request
 from agent_core.memory.recovery import CheckpointError, save_recovery_checkpoint
 from agent_core.permissions import PermissionMode, automatically_approve
 
-DEFAULT_MAX_TURNS = 20
+DEFAULT_MAX_TURNS = 30
 
 def run_agent(
         task: str,
@@ -196,9 +197,9 @@ def run_agent(
             return "Task cancelled."
 
         try:
-            request_messages = active_messages
+            request_messages = build_turn_budget_request(active_messages, turn, max_turns)
             if recovery_pending:
-                request_messages = build_recovery_request(active_messages)
+                request_messages = build_recovery_request(request_messages)
             # Every previous tool batch is complete before reaching this boundary
             compacted = compact_before_request(
                 request_messages, tool_schemas, model=model, reasoning=reasoning,
@@ -206,8 +207,8 @@ def run_agent(
                 should_cancel=cancel_requested, on_progress=report_progress,
             )
             compacted_this_task = compacted_this_task or compacted
-            if compacted and recovery_pending:
-                # Save the summary, but remove the retry-only instruction first
+            if compacted and request_messages is not active_messages:
+                # Save the summary without temporary recovery or turn-budget instructions
                 retained_messages = deepcopy(request_messages)
                 if active_messages and active_messages[0].get("role") == "system":
                     retained_messages[0] = deepcopy(active_messages[0])
@@ -285,6 +286,11 @@ def run_agent(
             # Translate requests into function calls
             tool_name = tool_call.function.name
             is_file_tool = tool_name in ("read_file",
+                                         "profile_csv",
+                                         "lookup_csv_records",
+                                         "analyze_csv",
+                                         "export_csv_report",
+                                         "export_csv_chart",
                                          "read_pdf",
                                          "read_file_lines",
                                          "write_file",
@@ -339,7 +345,7 @@ def run_agent(
                             **arguments, on_fetch_approval=request_pdf_fetch_approval,
                             should_cancel=cancel_requested,
                         )
-                    elif tool_name == "read_pdf":
+                    elif tool_name in ("read_pdf", "profile_csv", "lookup_csv_records"):
                         result = tool_function(
                             **arguments, workspace_root=workspace_root,
                             on_file_approval=request_file_approval,
@@ -350,7 +356,7 @@ def run_agent(
                         result = tool_function(**arguments, workspace_root=workspace_root, on_discovery_approval=request_discovery_approval)
                     elif tool_name == "search_files":
                         result = tool_function(**arguments, workspace_root=workspace_root, on_search_approval=request_search_approval)
-                    elif tool_name in ("export_pdf", "export_canvas"):
+                    elif tool_name in ("export_pdf", "export_canvas", "analyze_csv", "export_csv_report", "export_csv_chart"):
                         result = tool_function(
                             **arguments,
                             require_write_approval=permission_mode == PermissionMode.READ_ONLY,
@@ -435,5 +441,7 @@ def run_agent(
             return "Task cancelled."
 
     return (
-          f"Stopped after {max_turns} was hit: the model still required more tool calls."
+          f"Stopped after {max_turns} model turns: the model still requested tools. "
+          "Tool requests from the final response were not executed. Earlier completed work "
+          "is preserved; continue with the remaining deliverable rather than restarting the analysis."
       )

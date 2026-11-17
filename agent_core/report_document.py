@@ -60,9 +60,16 @@ blockquote {
     padding-left: 12pt;
     color: #444;
 }
+img {
+    max-width: 100%;
+    max-height: 230mm;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+}
 """
 
-def build_report_document(markdown: str, *, title: str = "Oceanus report") -> str:
+def build_report_document(markdown: str, *, title: str = "Oceanus report", image_urls: dict | None = None) -> str:
     if not isinstance(title, str):
         raise ValueError("Report title must be text!")
     if not title.strip() or len(title) > MAX_REPORT_TITLE_CHARS:
@@ -70,7 +77,7 @@ def build_report_document(markdown: str, *, title: str = "Oceanus report") -> st
     if "\x00" in title:
         raise ValueError("Report title must not contain NUL characters!")
 
-    body_html = render_markdown_html(markdown)
+    body_html = render_markdown_html(markdown, image_urls=image_urls)
     escaped_title = escape(title)
 
     document = f"""<!doctype html>
