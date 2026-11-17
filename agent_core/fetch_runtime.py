@@ -1,4 +1,6 @@
 """ Page-fetch worker controller on Linux """
+import base64
+import binascii
 import json
 import math
 import os
@@ -12,9 +14,11 @@ from pathlib import Path
 from agent_core.fetch_worker import (
     MAX_FETCH_JOB_BYTES,
     MAX_FETCH_REPLY_BYTES,
+    MAX_FETCH_PDF_REPLY_BYTES,
     FETCH_WORKER_ERRORS,
 )
 from agent_core.tools.fetch import MAX_FETCH_TEXT_CHARS
+from agent_core.pdf_read_limits import MAX_PDF_INPUT_BYTES
 
 
 FETCH_TOTAL_TIMEOUT = 60.0
@@ -41,7 +45,8 @@ def _collect_fetch_reply(
     url: str, 
     *, 
     should_cancel: Callable[[], bool] | None = None, 
-    timeout: float = FETCH_TOTAL_TIMEOUT
+    timeout: float = FETCH_TOTAL_TIMEOUT,
+    kind: str = "page",
 ) -> bytes:
     """ Collect one bounded worker reply after the caller obtains approval """
     if os.name != "posix":
@@ -54,7 +59,14 @@ def _collect_fetch_reply(
     # Reject oversized input before creating any JSON representation
     if len(url) > MAX_FETCH_JOB_BYTES:
         raise ValueError("Page worker request is too large!")
-    job = json.dumps({"url": url}, ensure_ascii=True).encode("ascii")
+    if kind not in ("page", "pdf"):
+        raise ValueError("Invalid fetch kind!")
+    request = {"url": url}
+    reply_limit = MAX_FETCH_REPLY_BYTES
+    if kind == "pdf":
+        request["kind"] = "pdf"
+        reply_limit = MAX_FETCH_PDF_REPLY_BYTES
+    job = json.dumps(request, ensure_ascii=True).encode("ascii")
     if len(job) > MAX_FETCH_JOB_BYTES:
         raise ValueError("Page worker request is too large!")
 
@@ -97,6 +109,10 @@ def _collect_fetch_reply(
                             sent += os.write(key.fd, job[sent:])
                         except BlockingIOError:
                             continue
+                        except BrokenPipeError:
+                            selector.unregister(process.stdin)
+                            process.stdin.close()
+                            continue
 
                         # Closing stdin tells the worker that the job is complete.
                         if sent == len(job):
@@ -105,7 +121,7 @@ def _collect_fetch_reply(
                     else:
                         # Read at most one byte beyond the remaining allowance.
                         # That extra byte detects a reply that is too large.
-                        allowance = MAX_FETCH_REPLY_BYTES + 1 - len(reply)
+                        allowance = reply_limit + 1 - len(reply)
                         try:
                             chunk = os.read(key.fd, min(4096, allowance))
                         except BlockingIOError:
@@ -116,13 +132,15 @@ def _collect_fetch_reply(
                             process.stdout.close()
                         else:
                             reply.extend(chunk)
-                            if len(reply) > MAX_FETCH_REPLY_BYTES:
+                            if len(reply) > reply_limit:
                                 raise OSError("Page worker reply is too large.")
 
             # Cancellation takes priority even if the worker just finished.
             _check_fetch_stop(deadline, should_cancel)
             if process.returncode != 0:
                 raise OSError("Page worker exited unsuccessfully.")
+            if sent != len(job):
+                raise OSError("Fetch worker did not receive the complete request.")
             return bytes(reply)
         finally:
             # Every exit path closes the pipes and stops an unfinished worker.
@@ -136,9 +154,11 @@ def _collect_fetch_reply(
                 process.stdout.close()
 
 
-def _parse_fetch_reply(raw: bytes, url: str) -> dict:
+def _parse_fetch_envelope(
+    raw: bytes, url: str, *, reply_limit: int, pdf: bool = False,
+) -> dict:
     """ Validate a worker reply and return the page or raise its error """
-    if not isinstance(raw, bytes) or len(raw) > MAX_FETCH_REPLY_BYTES:
+    if not isinstance(raw, bytes) or len(raw) > reply_limit:
         raise ValueError("Invalid page worker reply!")
     if not isinstance(url, str):
         raise ValueError("Expected a page URL!")
@@ -160,9 +180,13 @@ def _parse_fetch_reply(raw: bytes, url: str) -> dict:
 
         for error_class, message in FETCH_WORKER_ERRORS.items():
             if reply["error_type"] == error_class.__name__:
+                if pdf:
+                    message = PDF_FETCH_ERRORS[error_class]
                 raise error_class(message)
 
         if reply["error_type"] == "RuntimeError":
+            if pdf:
+                raise OSError("The PDF download worker failed unexpectedly!")
             raise OSError("The page worker failed unexpectedly!")
         raise ValueError("Unknown page worker error type!")
 
@@ -171,6 +195,11 @@ def _parse_fetch_reply(raw: bytes, url: str) -> dict:
     result = reply["result"]
     if not isinstance(result, dict):
         raise ValueError("Invalid page worker result!")
+    return result
+
+
+def _parse_fetch_reply(raw: bytes, url: str) -> dict:
+    result = _parse_fetch_envelope(raw, url, reply_limit=MAX_FETCH_REPLY_BYTES)
     # Checks the dictionary's field names
     if set(result) != {"url", "content_type", "content", "truncated"}:
         raise ValueError("Invalid page worker result!")
@@ -196,3 +225,30 @@ def _parse_fetch_reply(raw: bytes, url: str) -> dict:
             raise ValueError("Invalid page text!")
 
     return result
+
+
+PDF_FETCH_ERRORS = {
+    PermissionError: "PDF destination was blocked by the access policy.",
+    TimeoutError: "PDF download timed out.",
+    ValueError: "PDF URL, response type, header, or size was invalid or unsupported.",
+    OSError: "Could not download the PDF.",
+}
+
+
+def _parse_fetch_pdf_reply(raw: bytes, url: str) -> bytes:
+    result = _parse_fetch_envelope(raw, url, reply_limit=MAX_FETCH_PDF_REPLY_BYTES, pdf=True)
+    if set(result) != {"url", "content_type", "body_base64"}:
+        raise ValueError("Invalid PDF worker result!")
+    if result["url"] != url or result["content_type"] != "application/pdf":
+        raise ValueError("PDF worker returned a different URL or content type!")
+    encoded = result["body_base64"]
+    encoded_limit = 4 * ((MAX_PDF_INPUT_BYTES + 2) // 3)
+    if not isinstance(encoded, str) or len(encoded) > encoded_limit:
+        raise ValueError("Invalid PDF worker body!")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        raise ValueError("Invalid PDF worker encoding!") from None
+    if len(data) > MAX_PDF_INPUT_BYTES or not data.startswith(b"%PDF-"):
+        raise ValueError("Invalid or oversized PDF worker body!")
+    return data

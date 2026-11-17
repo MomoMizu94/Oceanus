@@ -36,6 +36,7 @@ def run_agent(
         on_web_approval: Callable[[str], bool] | None = None,
         on_fetch_approval: Callable[[str], bool] | None = None,
         *,
+        on_pdf_fetch_approval: Callable[[str], bool] | None = None,
         attachments: list[dict] | None = None,
         reasoning: str | bool | None = None,
         active_messages: list[dict] | None = None,
@@ -94,6 +95,9 @@ def run_agent(
 
     def request_web_approval(query: str) -> bool:
         return decide("web", on_web_approval, query)
+
+    def request_pdf_fetch_approval(url: str) -> bool:
+        return decide("web", on_pdf_fetch_approval, url)
 
     def request_fetch_approval(url: str) -> bool:
         return decide("web", on_fetch_approval, url)
@@ -281,6 +285,7 @@ def run_agent(
             # Translate requests into function calls
             tool_name = tool_call.function.name
             is_file_tool = tool_name in ("read_file",
+                                         "read_pdf",
                                          "read_file_lines",
                                          "write_file",
                                          "list_directory",
@@ -291,7 +296,7 @@ def run_agent(
                                          "find_files",)
             # Web content can contain errors
             # Keep operation's status separate from content returned by search
-            uses_structured_result = is_file_tool or tool_name in ("web_search", "fetch_page")
+            uses_structured_result = is_file_tool or tool_name in ("web_search", "fetch_page", "fetch_pdf")
             file_result = None
 
             if checkpoint_error is not None or cancel_requested():
@@ -327,6 +332,18 @@ def run_agent(
                         result = tool_function(
                             **arguments,
                             on_fetch_approval=request_fetch_approval,
+                            should_cancel=cancel_requested,
+                        )
+                    elif tool_name == "fetch_pdf":
+                        result = tool_function(
+                            **arguments, on_fetch_approval=request_pdf_fetch_approval,
+                            should_cancel=cancel_requested,
+                        )
+                    elif tool_name == "read_pdf":
+                        result = tool_function(
+                            **arguments, workspace_root=workspace_root,
+                            on_file_approval=request_file_approval,
+                            on_sensitive_approval=request_sensitive_approval,
                             should_cancel=cancel_requested,
                         )
                     elif tool_name == "find_files":

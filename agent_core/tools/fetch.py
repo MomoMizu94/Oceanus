@@ -302,7 +302,26 @@ def _open_fetch_socket(hostname: str, address: str, scheme: str) -> socket.socke
         raise
 
 def _request_fetch_page(url: str) -> dict:
-    """ Download one page. Approval required """
+    """ Download one approved HTML or plain-text page """
+    return _request_fetch_document(
+        url, content_types=("text/html", "text/plain"), max_bytes=MAX_FETCH_RESPONSE_BYTES,
+    )
+
+
+def _request_fetch_pdf(url: str) -> dict:
+    """ Download one approved PDF with the same destination checks """
+    from agent_core.pdf_read_limits import MAX_PDF_INPUT_BYTES
+
+    result = _request_fetch_document(
+        url, content_types=("application/pdf",), max_bytes=MAX_PDF_INPUT_BYTES,
+    )
+    if not result["body"].startswith(b"%PDF-"):
+        raise ValueError("PDF response must start with a PDF header!")
+    return result
+
+
+def _request_fetch_document(url: str, *, content_types: tuple[str, ...], max_bytes: int) -> dict:
+    """ Read a bounded response through a checked, pinned connection """
 
     parts = parse_fetch_url(url)
     host = validate_fetch_host(parts.hostname)
@@ -326,7 +345,7 @@ def _request_fetch_page(url: str) -> dict:
     headers = {
         "Host": authority,
         "User-Agent": "Oceanus/0.1",
-        "Accept": "text/html, text/plain",
+        "Accept": ", ".join(content_types),
         "Accept-Encoding": "identity",
         "Connection": "close"
     }
@@ -346,7 +365,7 @@ def _request_fetch_page(url: str) -> dict:
             if response.status != 200:
                 raise ValueError(f"Page server returned HTTP {response.status}!")
 
-            # Limit to uncompressed HTML or plaintext
+            # Accept only the requested format and uncompressed transport
             encoding = response.getheader("Content-Encoding", "identity")
             if encoding.strip().lower() != "identity":
                 raise ValueError("Page response uses unsupported content encoding!")
@@ -356,17 +375,17 @@ def _request_fetch_page(url: str) -> dict:
             if not response.getheader("Content-Type"):
                 raise ValueError("Page response is missing its content type!")
             content_type = response.headers.get_content_type()
-            if content_type not in ("text/html", "text/plain"):
-                raise ValueError("Page response must be HTML or plain text!")
+            if content_type not in content_types:
+                raise ValueError("Response content type is not supported by this tool!")
             charset = response.headers.get_content_charset() or "utf-8"
 
             # Reject an oversized declared body before reading, but also cap the read
             # for chunked responses and responses with no declared length.
             expected_length = response.length
-            if expected_length is not None and expected_length > MAX_FETCH_RESPONSE_BYTES:
+            if expected_length is not None and expected_length > max_bytes:
                 raise ValueError("Page response exceeds the size limit!")
-            body = response.read(MAX_FETCH_RESPONSE_BYTES + 1)
-            if len(body) > MAX_FETCH_RESPONSE_BYTES:
+            body = response.read(max_bytes + 1)
+            if len(body) > max_bytes:
                 raise ValueError("Page response exceeds the size limit!")
             if expected_length is not None and len(body) != expected_length:
                 raise ValueError("Page response ended before its declared length!")

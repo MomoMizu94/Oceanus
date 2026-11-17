@@ -3,7 +3,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
-from agent_core.fetch_approval import describe_page_fetch
+from agent_core.fetch_approval import describe_page_fetch, describe_pdf_fetch
 
 
 class FetchApprovalScreen(ModalScreen[bool]):
@@ -45,13 +45,14 @@ class FetchApprovalScreen(ModalScreen[bool]):
     }
     """
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, *, pdf: bool = False) -> None:
         super().__init__()
-        self.description = describe_page_fetch(url)
+        self.heading = "Fetch this PDF?" if pdf else "Fetch this page?"
+        self.description = describe_pdf_fetch(url) if pdf else describe_page_fetch(url)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="fetch-dialog"):
-            yield Static("Fetch this page?")
+            yield Static(self.heading)
             with VerticalScroll(id="fetch-details"):
                 # Brackets in URLs must remain literal text
                 yield Static(self.description, id="fetch-info", markup=False)
