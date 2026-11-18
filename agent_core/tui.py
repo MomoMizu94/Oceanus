@@ -223,10 +223,13 @@ class OceanusApp(App):
         *,
         kind: str = "notice",
         heading: str | None = None,
+        attachments=None,
     ) -> None:
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_output = conversation.is_vertical_scroll_end
-        entry = ConversationMessage(kind, message, heading=heading)
+        entry = ConversationMessage(
+            kind, message, heading=heading, attachments=attachments, workspace=self.workspace,
+        )
         conversation.mount(entry)
 
         # Follow later layout changes while at the bottom
@@ -239,7 +242,7 @@ class OceanusApp(App):
             count = len(attachments)
             noun = "image" if count == 1 else "images"
             heading = f"You · {count} {noun}"
-        self.write_message(text, kind="user", heading=heading)
+        self.write_message(text, kind="user", heading=heading, attachments=attachments)
 
     def on_prompt_editor_submitted(self, event: PromptEditor.Submitted) -> None:
         event.stop()

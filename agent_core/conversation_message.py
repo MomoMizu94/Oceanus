@@ -1,6 +1,10 @@
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Static, Markdown, Collapsible
+from pathlib import Path
+
+from agent_core.conversation_images import conversation_images
+from agent_core.image_preview import ImagePreview
 
 
 class ConversationMessage(Vertical):
@@ -87,13 +91,16 @@ class ConversationMessage(Vertical):
 
     """
 
-    def __init__(self, kind: str, text: str, *, heading: str | None = None) -> None:
+    def __init__(self, kind: str, text: str, *, heading: str | None = None,
+                 attachments=None, workspace: Path | None = None) -> None:
         if kind not in self.LABELS:
             raise ValueError(f"Unknown conversation message type: {kind}")
 
         # Class name lets CSS style this msg type
         super().__init__(classes=kind)
         self.text = text
+        self.workspace = Path.cwd() if workspace is None else Path(workspace)
+        self.image_references = conversation_images(text, attachments=attachments, kind=kind)
 
         if heading is None:
             self.heading = self.LABELS[kind]
@@ -133,3 +140,6 @@ class ConversationMessage(Vertical):
                 classes="message-body",
                 markup=False,
             )
+
+        for reference in self.image_references:
+            yield ImagePreview(reference, self.workspace)

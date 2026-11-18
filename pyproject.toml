@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn",
     "pydantic",
     "textual",
+    "textual-image>=0.14.4,<0.15",
     "Pillow",
     "matplotlib>=3.10,<4",
     "PyYAML>=6",
