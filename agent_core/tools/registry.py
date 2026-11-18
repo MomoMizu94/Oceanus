@@ -21,11 +21,35 @@ from agent_core.tools.pdf import read_pdf
 from agent_core.tools.web_pdf import fetch_pdf
 from agent_core.tools.csv import profile_csv, analyze_csv, export_csv_report, export_csv_chart, lookup_csv_records
 from agent_core.csv_records import FILTER_OPERATORS
+from agent_core.tools.image_generation import generate_image
 from agent_core.pdf_read_limits import MAX_PDF_PAGES, MAX_PDF_READ_CHARS
 from agent_core.report_limits import MAX_MARKDOWN_CHARS, MAX_REPORT_TITLE_CHARS
 
 
 TOOL_REGISTRY = {
+    "generate_image": {
+        "handler": generate_image,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "generate_image",
+                "description": "Generate one illustration locally with the user's configured ComfyUI image profile and save a new PNG. Uses Z-Image Base with settings from the user configuration, not tool arguments. No cloud service, automatic downloads, reference-image editing or arbitrary workflows. Requires the user's local setup; if unconfigured, explain the setup requirement instead of trying a cloud fallback or installing software. Supply a descriptive prompt and optional negative prompt as text (empty string when unused), aspect size and integer seed. Preserve exact prompts when the user requests a comparison. Same seed is not a cross-model or cross-version reproducibility guarantee. Existing image validation and file permissions apply; parent directory must exist; never overwrites. Runtime may unload the active local Ollama model, then releases image model memory before the chat model resumes. Output includes profile, dimensions, settings, provenance and image hash, not a visual quality assessment. For a report, reference the saved PNG from Markdown and use export_pdf. Generated pictures are illustrations, not verified evidence or exact data charts; use export_csv_chart for calculated charts. Only generate images when requested or clearly required by the user's task. Do not generate repeated variants without a task reason.",
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string", "minLength": 1, "maxLength": 4000},
+                        "negative_prompt": {"type": "string", "maxLength": 4000},
+                        "path": {"type": "string", "description": "New .png file, workspace-relative or absolute."},
+                        "size": {"type": "string", "enum": ["square", "landscape", "portrait"]},
+                        "seed": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+                    },
+                    "required": ["prompt", "negative_prompt", "path", "size", "seed"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    },
     "lookup_csv_records": {
         "handler": lookup_csv_records,
         "schema": {

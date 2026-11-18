@@ -14,6 +14,7 @@ from agent_core.turn_budget import build_turn_budget_request
 from agent_core.output_recovery import MAX_OUTPUT_RECOVERY_ATTEMPTS, build_recovery_request
 from agent_core.memory.recovery import CheckpointError, save_recovery_checkpoint
 from agent_core.permissions import PermissionMode, automatically_approve
+from agent_core.local_image_runtime import ImageCleanupError
 
 DEFAULT_MAX_TURNS = 30
 
@@ -282,12 +283,14 @@ def run_agent(
         if reply.content:
             report_progress(f"Agent: {reply.content}")
 
+        image_cleanup_error = None
         for tool_call in reply.tool_calls:
             # Translate requests into function calls
             tool_name = tool_call.function.name
             is_file_tool = tool_name in ("read_file",
                                          "profile_csv",
                                          "lookup_csv_records",
+                                         "generate_image",
                                          "analyze_csv",
                                          "export_csv_report",
                                          "export_csv_chart",
@@ -305,9 +308,11 @@ def run_agent(
             uses_structured_result = is_file_tool or tool_name in ("web_search", "fetch_page", "fetch_pdf")
             file_result = None
 
-            if checkpoint_error is not None or cancel_requested():
+            if checkpoint_error is not None or image_cleanup_error is not None or cancel_requested():
                 if checkpoint_error is not None:
                     result = "Tool skipped: recovery checkpoint failed before execution."
+                elif image_cleanup_error is not None:
+                    result = "Tool skipped: local image cleanup needs attention."
                 else:
                     result = "Tool skipped: task cancelled before execution."
 
@@ -356,6 +361,14 @@ def run_agent(
                         result = tool_function(**arguments, workspace_root=workspace_root, on_discovery_approval=request_discovery_approval)
                     elif tool_name == "search_files":
                         result = tool_function(**arguments, workspace_root=workspace_root, on_search_approval=request_search_approval)
+                    elif tool_name == "generate_image":
+                        result = tool_function(
+                            **arguments, workspace_root=workspace_root, active_model=model,
+                            on_file_approval=request_file_approval,
+                            on_sensitive_approval=request_sensitive_approval,
+                            should_cancel=cancel_requested, on_progress=report_progress,
+                            require_write_approval=permission_mode == PermissionMode.READ_ONLY,
+                        )
                     elif tool_name in ("export_pdf", "export_canvas", "analyze_csv", "export_csv_report", "export_csv_chart"):
                         result = tool_function(
                             **arguments,
@@ -392,6 +405,8 @@ def run_agent(
                         result = tool_function(**arguments)
 
                 except (ValueError, KeyError, TypeError, OSError, ShellSandboxError) as error:
+                    if isinstance(error, ImageCleanupError):
+                        image_cleanup_error = str(error)
                     # Report failed tool execution so model can respond
                     result = f"Tool error: {type(error).__name__}: {error}"
                     if uses_structured_result:
@@ -430,6 +445,9 @@ def run_agent(
             
             if on_tool_result is not None:
                 on_tool_result(tool_name, result)
+
+        if image_cleanup_error is not None:
+            return "Stopped: " + image_cleanup_error
 
         if checkpoint_error is not None:
             return checkpoint_error
