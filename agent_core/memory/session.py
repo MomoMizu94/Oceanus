@@ -21,6 +21,7 @@ def _validate_active_context(messages: list[dict], active_messages) -> None:
 
 def save_session(
     path: str | Path, messages: list[dict], *, workspace: Path | None = None, active_messages: list[dict] | None = None,
+    overwrite: bool = True,
 ) -> None:
     """Save both views together without truncating an existing file"""
     _validate_message_list(messages, "Session")
@@ -53,7 +54,11 @@ def save_session(
                                 prefix=".session-", delete=False) as temporary:
             temporary_path = Path(temporary.name)
             temporary.write(text + "\n")
-        temporary_path.replace(path)
+        if overwrite:
+            temporary_path.replace(path)
+        else:
+            # Publish the complete file only if another writer hasn't claimed the path
+            path.hardlink_to(temporary_path)
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)

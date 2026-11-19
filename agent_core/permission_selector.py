@@ -9,7 +9,7 @@ class PermissionSelector(Select):
     def __init__(self, **kwargs):
         options = []
         for mode, label in MODE_LABELS.items():
-            options.append((f"Permissions: {label}", mode.value))
+            options.append((label, mode.value))
         super().__init__(options, value=PermissionMode.ASK.value, allow_blank=False, **kwargs)
         self.task_busy = False
         self.locked_mode = PermissionMode.ASK

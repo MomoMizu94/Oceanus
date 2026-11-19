@@ -15,8 +15,12 @@ from agent_core.instructions import _read_instruction_text
 MAX_SKILL_ENTRIES = 512
 MAX_ACTIVE_SKILLS = 8
 MAX_SKILL_PROMPT_BYTES = 192 * 1024
-SKILL_NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
-SKILL_MENTION = re.compile(r"(?<![\w\\$/])\$([a-z][a-z0-9-]*)(?![\w$/-])")
+SKILL_NAME = re.compile(r"[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*")
+SKILL_MENTION = re.compile(r"(?<![\w\\$/])\$([a-z][a-z0-9_-]*)(?![\w$/-])")
+
+
+def valid_skill_name(name: object) -> bool:
+    return isinstance(name, str) and len(name) <= 64 and SKILL_NAME.fullmatch(name) is not None
 
 
 @dataclass(frozen=True)
@@ -82,8 +86,8 @@ def _load_skill(path: Path) -> Skill:
     metadata = _yaml_mapping("".join(lines[1:end]), path)
     name = metadata.get("name")
     description = metadata.get("description")
-    if not isinstance(name, str) or len(name) > 64 or not SKILL_NAME.fullmatch(name):
-        raise ValueError(f"{path} needs a lowercase, hyphen-separated name of at most 64 characters")
+    if not valid_skill_name(name):
+        raise ValueError(f"{path} needs a lowercase name of at most 64 characters with optional hyphens or underscores")
     if not isinstance(description, str) or not description.strip():
         raise ValueError(f"{path} needs a nonempty description")
     body = "".join(lines[end + 1:])
@@ -168,7 +172,7 @@ def requested_skill_names(task: str) -> list[str]:
             elif not inline_delimiter:
                 for match in SKILL_MENTION.finditer(part):
                     name = match.group(1)
-                    if name not in names:
+                    if valid_skill_name(name) and name not in names:
                         names.append(name)
     return names
 
@@ -197,7 +201,7 @@ def workspace_skill_names(workspace: Path | None) -> list[str]:
         raise ValueError(f"{path}: skills.always must be a list of skill names")
     unique = []
     for name in names:
-        if not isinstance(name, str) or len(name) > 64 or not SKILL_NAME.fullmatch(name):
+        if not valid_skill_name(name):
             raise ValueError(f"Invalid skill name in {path}")
         if name not in unique:
             unique.append(name)

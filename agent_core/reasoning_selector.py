@@ -12,7 +12,7 @@ from agent_core.model_discovery import ollama_reasoning_modes
 
 class ReasoningSelector(Select):
     def __init__(self, **kwargs):
-        super().__init__([("Reasoning: model default", "auto")],
+        super().__init__([("Reasoning: default", "auto")],
                          value="auto", allow_blank=False, disabled=True, **kwargs)
         self.model = ""
         self.loading_modes = False
@@ -38,7 +38,7 @@ class ReasoningSelector(Select):
         self.revision += 1
         self.modes = {"auto": None}
         preferred = default_reasoning(model)
-        label = "model default" if preferred is None else f"{preferred} (default)"
+        label = "default" if preferred is None else f"{preferred} (default)"
         self.set_options([(f"Reasoning: {label}", "auto")])
         self.value = "auto"
         self.disabled = True

@@ -1,11 +1,16 @@
-from textual.app import App, ComposeResult
-from textual.widgets import Footer, Header, Select, Static
-from textual.containers import Horizontal, VerticalScroll
+from collections.abc import Iterator
+from textual.app import App, ComposeResult, SystemCommand
+from textual.screen import Screen
+from textual.widgets import OptionList, Select, Static, TextArea
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.binding import Binding
 from textual import work
+from functools import partial
 from importlib.resources import files
 from pathlib import Path
+from inspect import isawaitable
 import os
+import re
 from threading import Event
 from copy import deepcopy
 import asyncio
@@ -14,7 +19,7 @@ from http.client import HTTPException
 from agent_core.loop import run_agent, DEFAULT_MAX_TURNS
 from agent_core.approval_screen import ShellApprovalScreen
 from agent_core.file_approval_screen import FileApprovalScreen
-from agent_core.memory.session import save_session
+from agent_core.memory.session import load_session_state, save_session
 from agent_core.memory.recovery import (
     RECOVERY_NOTICE, has_interrupted_tools, load_recovery_session,
     new_session_path, prepare_recovery_messages,
@@ -22,6 +27,7 @@ from agent_core.memory.recovery import (
 from agent_core.shell_sandbox import validate_workspace_root
 from agent_core.workspace_screen import WorkspaceScreen
 from agent_core.session_picker import SessionPicker
+from agent_core.slash_commands import COMMANDS, CommandMenu
 from agent_core.model_client import DEFAULT_MODEL, QWEN_Q4_MODEL
 from agent_core.model_discovery import list_ollama_models
 from agent_core.edit_approval_screen import EditApprovalScreen
@@ -33,6 +39,7 @@ from agent_core.web_approval_screen import WebApprovalScreen
 from agent_core.fetch_approval_screen import FetchApprovalScreen
 from agent_core.conversation_message import ConversationMessage
 from agent_core.image_preview import ImagePreview
+from agent_core.greeting import GreetingPortrait
 from agent_core.wal_theme import load_wal_theme
 from agent_core.prompt_editor import PromptEditor
 from agent_core.reasoning_selector import ReasoningSelector
@@ -45,6 +52,7 @@ class OceanusApp(App):
     """ A terminal interface (TUI) for Oceanus """
 
     TITLE = "Oceanus"
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (84, "-wide")]
     VERTICAL_BREAKPOINTS = [(0, "-short"), (22, "-regular-height")]
 
     BINDINGS = [
@@ -61,49 +69,49 @@ class OceanusApp(App):
         layout: vertical;
     }
 
-    #conversation {
-        height: 1fr;
-        padding: 1 2;
-        align-horizontal: center;
-    }
-
-    #workspace-controls {
+    #top-line {
         height: 1;
+        margin: 1 2 0 2;
     }
-
-    #permission-select {
-        width: 34;
-    }
-
-    #turn-select {
-        width: 16;
-    }
-
+    #brand { width: auto; color: $text-accent; text-style: bold; }
     #workspace-path {
-        width: 1fr;
-        height: 1;
-        padding: 0 2;
-        color: $text-muted;
+        width: 1fr; height: 1; padding-left: 2; color: $text-muted;
+        text-overflow: ellipsis; text-wrap: nowrap;
     }
-
-    #model-controls {
-        height: auto;
+    #transcript-area { layers: greeting default; }
+    #conversation.opening { layer: greeting; }
+    #conversation { height: 1fr; padding: 1 2; }
+    #conversation > ConversationMessage { width: 1fr; }
+    #activity { height: auto; max-height: 2; color: $text-muted; margin: 0 2; }
+    #composer {
+        height: auto; min-height: 3; padding: 1; margin: 0 1;
+        background: $surface;
     }
-
-    #model-select {
-        width: 2fr;
+    #prompt-mark { width: 2; height: 1; color: $text-accent; text-style: bold; }
+    #task-input, #task-input:focus {
+        width: 1fr; height: auto; min-height: 1; max-height: 6;
+        padding: 0; border: none; background: $surface;
     }
-
-    #reasoning-select {
-        width: 1fr;
-        min-width: 28;
+    #model-controls { height: 1; margin: 0 1; }
+    #model-controls Select { height: 1; }
+    #model-controls SelectCurrent {
+        border: none; background: transparent; padding: 0 1;
     }
-
-    #conversation > ConversationMessage {
-        width: 1fr;
-        max-width: 80;
+    #model-controls Select:focus > SelectCurrent { background: $panel; }
+    #model-controls SelectOverlay { min-width: 32; constrain: inside inside; }
+    #model-select { width: 3fr; color: $text-accent; }
+    #reasoning-select { width: 2fr; }
+    #permission-select { width: 2fr; color: $accent; }
+    #turn-select { width: 14; }
+    Screen.-narrow #model-controls {
+        layout: grid; height: 2; grid-size: 2 2; grid-columns: 1fr 1fr; grid-rows: 1 1;
     }
-
+    Screen.-narrow #model-controls Select { width: 1fr; }
+    #shortcuts { height: 1; margin: 0 2; color: $text-muted; }
+    #command-menu {
+        display: none; dock: bottom; height: auto; max-height: 100%; margin: 0 1;
+        padding: 0 1; border: none; background: $panel;
+    }
     ModalScreen > Vertical > Static:first-child {
         border-left: thick $primary;
         padding-left: 1;
@@ -133,11 +141,6 @@ class OceanusApp(App):
         padding: 0 2;
     }
 
-    #task-input {
-        dock: bottom;
-        margin: 1 0;
-    }
-
     #pending-prompts {
         display: none;
         height: auto;
@@ -162,6 +165,7 @@ class OceanusApp(App):
 
         self.model = DEFAULT_MODEL
         self.busy = False
+        self.command_selector: Select | None = None
         self.cancel_event = Event()
         self.pending_messages: list[dict] = []
         self.request_previews: dict[Path, ImagePreview] = {}
@@ -171,6 +175,7 @@ class OceanusApp(App):
         self.active_messages: list[dict] | None = None
         self.workspace = Path.cwd().resolve()
         self.session_path = new_session_path()
+        self.session_state_saved = False
         self.coding_prompt = (
             files("agents.coding")
             .joinpath("system_prompt.md")
@@ -180,36 +185,37 @@ class OceanusApp(App):
 
     def compose(self) -> ComposeResult:
         """ Supplied widgets on screen """
-        yield Header()
-        with Horizontal(id="workspace-controls"):
+        with Horizontal(id="top-line"):
+            yield Static("❯_ Oceanus", id="brand", markup=False)
             workspace_label = Static(str(self.workspace), id="workspace-path", markup=False)
             workspace_label.tooltip = str(self.workspace)
             yield workspace_label
-            yield PermissionSelector(id="permission-select", compact=True)
-            yield TurnSelector(id="turn-select", compact=True)
-        # Drop-down model selection
-        with Horizontal(id="model-controls"):
-            yield Select(
-                [("GPT-4.1 - OpenAI API", DEFAULT_MODEL)],
-                value=self.model,
-                allow_blank=False,
-                disabled=True,
-                id="model-select"
-            )
-            yield ReasoningSelector(id="reasoning-select")
-
-        yield VerticalScroll(id="conversation")
+        with Vertical(id="transcript-area"):
+            with VerticalScroll(id="conversation", classes="opening"):
+                yield GreetingPortrait()
+            yield CommandMenu(id="command-menu")
+        yield Static("", id="activity", markup=False)
         with VerticalScroll(id="pending-prompts") as pending:
             pending.border_title = "Queued"
             yield Static("", id="pending-text", markup=False)
-        yield PromptEditor(
-            disabled=True,
-            id="task-input"
-        )
-        yield Footer()
+        with Horizontal(id="composer"):
+            yield Static("›", id="prompt-mark")
+            yield PromptEditor(disabled=True, id="task-input")
+        with Horizontal(id="model-controls"):
+            yield Select(
+                [("GPT-4.1", DEFAULT_MODEL)], value=self.model,
+                allow_blank=False, disabled=True, compact=True, id="model-select",
+            )
+            yield ReasoningSelector(id="reasoning-select", compact=True)
+            yield PermissionSelector(id="permission-select", compact=True)
+            yield TurnSelector(id="turn-select", compact=True)
+        yield Static("/ commands   $ skills   Shift+Enter newline", id="shortcuts", markup=False)
 
     async def on_mount(self) -> None:
         # Runs after interface mounts
+        self.query_one(PromptEditor).command_menu = self.query_one(CommandMenu)
+        for control in self.query("#model-controls Select"):
+            self.watch(control, "expanded", partial(self.selector_toggled, control), init=False)
         self.set_interval(1.0, self.reload_wal_theme)
         self.sub_title = "Loading Ollama models..."
         selector = self.query_one("#model-select", Select)
@@ -272,6 +278,9 @@ class OceanusApp(App):
         attachments=None,
     ) -> None:
         conversation = self.query_one("#conversation", VerticalScroll)
+        if conversation.has_class("opening"):
+            conversation.remove_class("opening")
+            conversation.remove_children(GreetingPortrait)
         follow_output = conversation.is_vertical_scroll_end
         if kind == "user":
             self.request_previews.clear()
@@ -293,7 +302,84 @@ class OceanusApp(App):
             heading = f"You · {count} {noun}"
         self.write_message(text, kind="user", heading=heading, attachments=attachments)
 
-    def on_prompt_editor_submitted(self, event: PromptEditor.Submitted) -> None:
+    def selector_toggled(self, selector: Select, expanded: bool) -> None:
+        if expanded or self.command_selector is not selector:
+            return
+        self.command_selector = None
+        self.call_after_refresh(self.focus_after_selection, selector)
+
+    def focus_after_selection(self, selector: Select) -> None:
+        if self.focused is selector:
+            self.query_one(PromptEditor).focus()
+
+    def get_system_commands(self, screen: Screen) -> Iterator[SystemCommand]:
+        for command in super().get_system_commands(screen):
+            if command.title not in ("Maximize", "Screenshot"):
+                yield command
+
+    def command_descriptions(self) -> dict[str, str]:
+        commands = COMMANDS.copy()
+        for command in self.get_system_commands(self.screen):
+            commands[command.title.lower()] = command.help
+        return commands
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        editor = event.text_area
+        if not isinstance(editor, PromptEditor) or editor.command_menu is None:
+            return
+        menu = editor.command_menu
+        if re.fullmatch(r"/[a-z]*", editor.text):
+            menu.show_matches(editor.text[1:], self.command_descriptions())
+        elif re.fullmatch(r"\$(?:[a-z][a-z0-9_-]*)?", editor.text):
+            menu.show_skill_matches(editor.text[1:])
+        else:
+            menu.display = False
+
+    async def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if isinstance(event.option_list, CommandMenu) and event.option.id:
+            event.stop()
+            editor = self.query_one(PromptEditor)
+            if not event.option_list.display:
+                return
+            if event.option_list.skill_prefix is not None:
+                editor.complete_skill(event.option.id)
+            elif re.fullmatch(r"/[a-z]*", editor.text):
+                await self.invoke_prompt_command(event.option.id)
+
+    async def invoke_prompt_command(self, name: str) -> None:
+        editor = self.query_one(PromptEditor)
+        if editor.disabled or editor.paste_pending or len(self.screen_stack) != 1:
+            return
+        system_actions = {command.title.lower(): command.callback for command in self.get_system_commands(self.screen)}
+        if name not in COMMANDS and name not in system_actions:
+            self.notify(f"Unknown command /{name}. Type / to see the commands.")
+            return
+        editor.load_text("")
+        self.query_one(CommandMenu).display = False
+        editor.focus()
+        if name in ("model", "reasoning", "permissions", "turns"):
+            selector_id = {"permissions": "permission", "turns": "turn"}.get(name, name)
+            selector = self.query_one(f"#{selector_id}-select", Select)
+            if selector.disabled:
+                reason = "Wait for the current task to finish." if self.busy else str(selector.tooltip)
+                self.notify(reason)
+            else:
+                self.command_selector = selector
+                selector.focus()
+                selector.action_show_overlay()
+            return
+        actions = {
+            "exit": self.action_quit, "continue": self.action_continue_session,
+            "open": self.action_open_session, "save": self.action_save_session,
+            "cancel": self.action_cancel_task, "skills": editor.action_choose_skill,
+            "palette": self.action_command_palette,
+        }
+        actions.update(system_actions)
+        result = actions[name]()
+        if isawaitable(result):
+            await result
+
+    async def on_prompt_editor_submitted(self, event: PromptEditor.Submitted) -> None:
         event.stop()
         task_input = self.query_one("#task-input", PromptEditor)
         task = event.text
@@ -302,6 +388,24 @@ class OceanusApp(App):
             return
         # Keep image-only prompts and preserve the user's exact text
         if not task.strip() and not event.attachments:
+            return
+        if not event.attachments and task.strip() == "$":
+            self.query_one(CommandMenu).show_skill_matches("")
+            return
+        if task.lstrip().startswith("/"):
+            token, *arguments = task.split(maxsplit=1)
+            if (arguments or event.attachments) and token[1:] in self.command_descriptions():
+                self.notify(f"Enter {token} on its own. It takes no arguments or images.", severity="warning")
+                return
+        if not event.attachments and re.fullmatch(r"/[a-z]*", task.strip()):
+            prefix = task.strip()[1:]
+            selected = self.query_one(CommandMenu).selection_name()
+            if selected and selected.startswith(prefix):
+                await self.invoke_prompt_command(selected)
+            elif prefix:
+                await self.invoke_prompt_command(prefix)
+            else:
+                self.query_one(CommandMenu).show_matches("", self.command_descriptions())
             return
 
         if self.busy and self.cancel_event.is_set():
@@ -343,11 +447,11 @@ class OceanusApp(App):
         max_turns = turn_selector.max_turns
         turn_selector.set_task_busy(True)
         self.sub_title = f"{self.model} | Working..."
-        if not self.conversation_history:
-            self.write_message(f"Recovery checkpoints: {self.session_path}", kind="status")
+        self.query_one("#activity", Static).tooltip = f"Recovery checkpoints: {self.session_path}"
         for message in messages:
             self.write_user_message(message["content"], message.get("attachments"))
-        self.query_one(PromptEditor).border_title = "Prompt · Enter queues a follow-up"
+        self.query_one(PromptEditor).placeholder = "Queue a follow-up"
+        self.query_one("#activity", Static).update("Working…")
 
         latest = messages[-1]
         self.run_task(
@@ -364,24 +468,28 @@ class OceanusApp(App):
         if message.startswith("Agent: "):
             text = message.removeprefix("Agent: ")
             self.call_from_thread(self.write_message, text, kind="assistant")
+        elif message.startswith(("This is model turn: ", "Running tool: ")):
+            activity = message.removeprefix("This is model turn: ")
+            if activity != message:
+                activity = f"Model turn {activity}"
+            self.call_from_thread(self.show_activity, activity)
         else:
             self.call_from_thread(self.write_message, message, kind="status")
+
+    def show_activity(self, message: str) -> None:
+        self.query_one("#activity", Static).update(message)
 
     def report_tool_result(self, tool_name: str, result: str) -> None:
         self.call_from_thread(
             self.write_message,
             result,
             kind="tool",
-            heading=f"Tool result: {tool_name}",
+            heading=tool_name,
         )
 
     def report_tool_status(self, tool_name: str, status: str) -> None:
-        self.call_from_thread(
-            self.write_message,
-            status,
-            kind="status",
-            heading=f"Tool execution: {tool_name}",
-        )
+        if status != "success":
+            self.call_from_thread(self.write_message, f"{tool_name} · {status}", kind="status")
 
     def request_file_approval(self, operation: str, path: str) -> bool:
         # Schedules show_file_approval to the UI thread
@@ -606,6 +714,7 @@ class OceanusApp(App):
         if history is not None:
             self.conversation_history = history
             self.active_messages = active_messages
+            self.session_state_saved = False
         if failed or history is None:
             kind = "error"
         else:
@@ -640,9 +749,23 @@ class OceanusApp(App):
         self.query_one(TurnSelector).set_task_busy(False)
 
         task_input = self.query_one("#task-input", PromptEditor)
-        task_input.border_title = "Prompt"
+        task_input.placeholder = "Ask Oceanus anything"
+        self.query_one("#activity", Static).update("")
         task_input.disabled = False
         task_input.focus()
+
+    def action_continue_session(self) -> None:
+        editor = self.query_one(PromptEditor)
+        if self.busy or editor.paste_pending:
+            self.notify("Wait for the current operation before switching conversations.")
+            return
+        workspace = self.workspace.resolve()
+
+        def resume_here(path: Path | None) -> None:
+            self.restore_session(path, required_workspace=workspace)
+
+        picker = SessionPicker([], directory=self.session_path.parent, workspace=workspace)
+        self.push_screen(picker, resume_here)
 
     def action_open_session(self) -> None:
         # Do not open another picker over an existing dialog
@@ -661,8 +784,7 @@ class OceanusApp(App):
 
         if self.conversation_history or task_input.text:
             self.notify(
-                "Open sessions in a fresh TUI."
-                "Save you conversation and restart first."
+                "Use /continue to switch conversations here. Open other workspaces from a fresh TUI."
             )
             return
 
@@ -683,7 +805,7 @@ class OceanusApp(App):
 
         self.push_screen(SessionPicker(paths), self.restore_session)
 
-    def restore_session(self, path: Path | None) -> None:
+    def restore_session(self, path: Path | None, *, required_workspace: Path | None = None) -> None:
         if path is None:
             return
 
@@ -693,10 +815,18 @@ class OceanusApp(App):
 
         try:
             path = path.resolve()
+            if required_workspace is not None and path == self.session_path and self.conversation_history:
+                self.notify("This conversation is already open.")
+                return
             history, active_messages, workspace = load_recovery_session(path)
             if not history:
                 raise ValueError("This session is empty!")
-        except (OSError, ValueError) as error:
+            if required_workspace is not None:
+                if workspace is None or workspace.resolve() != required_workspace:
+                    raise ValueError("This conversation belongs to a different workspace.")
+                if path != self.session_path and self.conversation_history:
+                    self.preserve_outgoing_session()
+        except (OSError, ValueError, RuntimeError) as error:
             self.notify(f"Could not open session: {error}", severity="error")
             return
 
@@ -709,6 +839,29 @@ class OceanusApp(App):
             return
 
         self.apply_session(path, history, workspace, active_messages=active_messages)
+
+    def preserve_outgoing_session(self) -> None:
+        destination = self.session_path
+        try:
+            saved, active, workspace = load_session_state(destination)
+        except FileNotFoundError:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            # An idle terminal may still be displaying an older saved conversation
+            if self.session_state_saved and workspace == self.workspace:
+                return
+            history = self.conversation_history
+            local_active = self.active_messages if self.active_messages is not None else history
+            if workspace == self.workspace and saved == history and active == local_active:
+                return
+            # Keep both versions when local work differs from the checkpoint
+            destination = destination.with_name(new_session_path().name)
+        save_session(
+            destination, self.conversation_history, workspace=self.workspace,
+            active_messages=self.active_messages, overwrite=False,
+        )
+        if destination != self.session_path:
+            self.notify(f"Saved the local conversation separately at {destination}")
 
     def apply_session(
         self, path: Path, history: list[dict], workspace: Path,
@@ -735,18 +888,29 @@ class OceanusApp(App):
             active_messages = deepcopy(history)
         self.active_messages = active_messages
         self.session_path = path
+        self.session_state_saved = True
         conversation = self.query_one("#conversation", VerticalScroll)
-        conversation.remove_children()
+        conversation.remove_children(ConversationMessage)
         self.request_previews.clear()
 
         # Display saved content without changing the model's history
+        tool_names = {}
         for message in history:
             role = message.get("role")
             content = message.get("content")
+            if role == "assistant":
+                tool_names.clear()
+                for call in message.get("tool_calls") or []:
+                    function = call.get("function")
+                    if isinstance(function, dict) and isinstance(function.get("name"), str):
+                        tool_names[call["id"]] = function["name"]
             if isinstance(content, str):
                 if role == "user":
                     self.write_user_message(content, message.get("attachments"))
-                elif role in ("assistant", "tool"):
+                elif role == "tool":
+                    name = tool_names.get(message.get("tool_call_id"))
+                    self.write_message(content, kind=role, heading=name)
+                elif role == "assistant":
                     self.write_message(content, kind=role)
 
         self.write_message(f"Session opened: {path}")
@@ -775,6 +939,7 @@ class OceanusApp(App):
             self.notify(f"Could not save the session: {error}", severity="error")
             return
 
+        self.session_state_saved = True
         self.write_message(f"Session saved: {self.session_path}")
 
     def action_interrupt_conversation(self) -> None:
@@ -787,6 +952,7 @@ class OceanusApp(App):
 
         self.cancel_event.set()
         self.sub_title = f"{self.model} | Cancelling..."
+        self.query_one("#activity", Static).update("Cancelling…")
 
         if isinstance(self.screen, (ShellApprovalScreen, FileApprovalScreen, EditApprovalScreen, SensitiveApprovalScreen, WebApprovalScreen, FetchApprovalScreen)):
             self.screen.dismiss(False)

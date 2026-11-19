@@ -11,6 +11,7 @@ from textual.binding import Binding
 from agent_core.prompt_image_edit import ImageMarker, PromptEdit
 from agent_core.clipboard_images import read_clipboard_image
 from agent_core.skill_picker import SkillPicker
+from agent_core.slash_commands import CommandMenu
 from agent_core.image_attachments import MAX_IMAGES_PER_MESSAGE, save_image_bytes
 
 
@@ -47,6 +48,7 @@ class PromptEditor(TextArea):
         self.draft_revision = 0
         self.paste_pending = False
         self.image_markers: list[ImageMarker] = []
+        self.command_menu: CommandMenu | None = None
         self.next_image_number = 1
         super().__init__(
             id=id,
@@ -58,9 +60,8 @@ class PromptEditor(TextArea):
             tab_behavior="focus",
             show_line_numbers=False,
             highlight_cursor_line=False,
-            placeholder="Enter sends | Shift+Enter adds a line | Ctrl+V pastes an image",
+            placeholder="Ask Oceanus anything",
         )
-        self.border_title = "Prompt"
 
     def edit(self, edit: Edit) -> EditResult:
         # Route ordinary typing and deletion through marker-aware edits
@@ -119,6 +120,13 @@ class PromptEditor(TextArea):
             self.insert(f"${name}{separator}", (0, 0))
         self.focus()
 
+    def complete_skill(self, name: str) -> None:
+        if self.disabled or self.read_only or self.paste_pending:
+            return
+        if self.text.startswith("$") and name.startswith(self.text[1:]):
+            self.replace(f"${name} ", (0, 0), (0, len(self.text)), maintain_selection_offset=False)
+            self.focus()
+
     def action_paste_image(self) -> None:
         if self.disabled or self.read_only or self.paste_pending:
             return
@@ -140,6 +148,31 @@ class PromptEditor(TextArea):
         return True
 
     def on_key(self, event: Key) -> None:
+        menu = self.command_menu
+        if (menu is not None and menu.display and menu.skill_prefix is not None
+                and self.text == "$" + menu.skill_prefix and event.key in ("enter", "tab")):
+            name = menu.selection_name()
+            if name or menu.skill_catalog is None or self.text == "$" or event.key == "tab":
+                event.stop()
+                event.prevent_default()
+                if name:
+                    self.complete_skill(name)
+                return
+        if menu is not None and menu.display and event.key in ("up", "down", "tab", "escape"):
+            event.stop()
+            event.prevent_default()
+            if event.key == "up":
+                menu.action_cursor_up()
+            elif event.key == "down":
+                menu.action_cursor_down()
+            elif event.key == "escape":
+                menu.display = False
+            else:
+                name = menu.selection_name()
+                if name and menu.skill_prefix is None:
+                    self.load_text("/" + name)
+                    self.move_cursor((0, len(self.text)))
+            return
         if event.key not in ("enter", "shift+enter"):
             return
 

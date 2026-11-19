@@ -1,5 +1,6 @@
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.markup import escape
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Static, Markdown, Collapsible
 from pathlib import Path
 
@@ -29,6 +30,14 @@ class ConversationMessage(Vertical):
         color: $foreground;
     }
 
+    ConversationMessage .speaker-line { height: auto; }
+    ConversationMessage .speaker-line > .message-heading {
+        width: 2; height: 1; color: $text-accent;
+    }
+    ConversationMessage .speaker-line > .message-body { width: 1fr; }
+    ConversationMessage .tool-details CollapsibleTitle { color: $text-muted; }
+    ConversationMessage .tool-details CollapsibleTitle:focus { color: $text-accent; }
+
     ConversationMessage Markdown.message-body {
         padding: 0;
     }
@@ -40,17 +49,17 @@ class ConversationMessage(Vertical):
 
     ConversationMessage.user {
         background: $surface;
-        padding: 1 2;
+        padding: 0 1;
     }
 
     ConversationMessage .message-heading {
         text-style: bold;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
 
     ConversationMessage.user,
     ConversationMessage.assistant {
-        margin: 1 0 2 0;
+        margin: 1 0;
     }
 
     ConversationMessage.assistant .message-heading {
@@ -130,32 +139,26 @@ class ConversationMessage(Vertical):
 
 
     def compose(self) -> ComposeResult:
-        yield Static(
-            self.heading,
-            classes="message-heading",
-            markup=False,
-        )
-
-        if self.has_class("assistant"):
-            yield Markdown(
-                self.text,
-                classes="message-body",
-                parser_factory=conversation_markdown_parser,
-                open_links=False,
-            )
-        elif self.has_class("tool"):
-            # Hide the output until the user opens its details
-            with Collapsible(
-                title="Details",
-                collapsed=True,
-                classes="tool-details",
-            ):
+        if self.has_class("tool"):
+            with Collapsible(title=escape(self.heading), collapsed=True, classes="tool-details"):
                 yield LiteralMessageBody(self.text)
+        elif self.heading in ("You", "Agent", "Status", "Notice"):
+            marker = "›" if self.has_class("user") else "•"
+            with Horizontal(classes="speaker-line"):
+                yield Static(marker, classes="message-heading", markup=False)
+                yield self.body_widget()
         else:
-            # Keep other message types literal
-            yield LiteralMessageBody(self.text)
-
+            yield Static(self.heading, classes="message-heading", markup=False)
+            yield self.body_widget()
         yield from self.previews
+
+    def body_widget(self):
+        if self.has_class("assistant"):
+            return Markdown(
+                self.text, classes="message-body",
+                parser_factory=conversation_markdown_parser, open_links=False,
+            )
+        return LiteralMessageBody(self.text)
 
     def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
         event.stop()

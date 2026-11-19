@@ -8,7 +8,24 @@ from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from agent_core.skills import discover_skills
+from agent_core.skills import Skill, discover_skills
+
+
+def skill_options(catalog: list[Skill], warnings: list[str], prefix: str = "") -> list[Option]:
+    counts = Counter(skill.name for skill in catalog)
+    entries = []
+    for skill in catalog:
+        if not skill.name.startswith(prefix):
+            continue
+        if counts[skill.name] > 1:
+            label = Text(f"${skill.name} (duplicate name)\n{skill.path}")
+            entries.append(Option(label, disabled=True))
+        else:
+            label = Text(f"${skill.name}\n{skill.description}")
+            entries.append(Option(label, id=skill.name))
+    for warning in warnings:
+        entries.append(Option(Text(warning), disabled=True))
+    return entries
 
 
 class SkillPicker(ModalScreen[str | None]):
@@ -39,17 +56,7 @@ class SkillPicker(ModalScreen[str | None]):
             hint.update(f"Could not load skills: {error}")
             return
 
-        counts = Counter(skill.name for skill in catalog)
-        entries = []
-        for skill in catalog:
-            if counts[skill.name] > 1:
-                label = Text(f"${skill.name} (duplicate name)\n{skill.path}")
-                entries.append(Option(label, disabled=True))
-            else:
-                label = Text(f"${skill.name}\n{skill.description}")
-                entries.append(Option(label, id=skill.name))
-        for warning in warnings:
-            entries.append(Option(Text(warning), disabled=True))
+        entries = skill_options(catalog, warnings)
         options.add_options(entries)
         options.action_first()
         if catalog:

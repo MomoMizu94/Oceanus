@@ -33,3 +33,4 @@ include = ["agent_core*", "agents*"]
 # Keep the coding agent's prompt and settings available after installation.
 [tool.setuptools.package-data]
 "agents.coding" = ["*.md", "*.yaml"]
+"agent_core" = ["assets/greeting.png", "assets/greeting-avatar.png"]
