@@ -84,7 +84,7 @@ def main() -> None:
         job = json.loads(raw.decode("utf-8"))
         if not isinstance(job, dict) or set(job) not in ({"url"}, {"url", "kind"}):
             raise ValueError("Expected a URL job.")
-        if "kind" in job and job["kind"] != "pdf":
+        if "kind" in job and job["kind"] not in ("pdf", "render"):
             raise ValueError("Invalid fetch job kind.")
         if not isinstance(job["url"], str):
             raise ValueError("Expected a text URL.")
@@ -98,6 +98,19 @@ def main() -> None:
         if job.get("kind") == "pdf":
             reply_limit = MAX_FETCH_PDF_REPLY_BYTES
             reply = _run_pdf_fetch_job(job["url"])
+        elif job.get("kind") == "render":
+            try:
+                from agent_core.browser_render import render_visible_text
+                reply = {"status": "success", "result": render_visible_text(job["url"])}
+            except Exception as error:
+                if isinstance(error, ImportError):
+                    error = FileNotFoundError()
+                error_type = "RuntimeError"
+                for cls in (FileNotFoundError, *FETCH_WORKER_ERRORS):
+                    if isinstance(error, cls):
+                        error_type = cls.__name__
+                        break
+                reply = {"status": "error", "error_type": error_type, "message": "Page rendering failed."}
         else:
             reply = _run_fetch_job(job["url"])
 

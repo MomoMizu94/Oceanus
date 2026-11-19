@@ -20,7 +20,7 @@ from agent_core.filename_approval import approve_discovery
 from agent_core.instructions import build_system_prompt
 from agent_core.skills import discover_skills, prepare_skill_prompt
 from agent_core.web_approval import approve_web_search
-from agent_core.fetch_approval import approve_page_fetch, approve_pdf_fetch
+from agent_core.fetch_approval import approve_page_fetch, approve_pdf_fetch, approve_page_render
 
 
 def print_tool_status(tool_name: str, status: str) -> None:
@@ -202,6 +202,7 @@ def main() -> None:
         on_discovery_approval=approve_discovery,
         on_web_approval=approve_web_search,
         on_fetch_approval=approve_page_fetch,
+        on_render_approval=approve_page_render,
         on_pdf_fetch_approval=approve_pdf_fetch,
     )
     print("Agent:", answer)

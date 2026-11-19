@@ -38,6 +38,7 @@ def run_agent(
         on_web_approval: Callable[[str], bool] | None = None,
         on_fetch_approval: Callable[[str], bool] | None = None,
         *,
+        on_render_approval: Callable[[str], bool] | None = None,
         on_pdf_fetch_approval: Callable[[str], bool] | None = None,
         attachments: list[dict] | None = None,
         reasoning: str | bool | None = None,
@@ -100,6 +101,9 @@ def run_agent(
 
     def request_pdf_fetch_approval(url: str) -> bool:
         return decide("web", on_pdf_fetch_approval, url)
+
+    def request_render_approval(url: str) -> bool:
+        return decide("web", on_render_approval, url)
 
     def request_fetch_approval(url: str) -> bool:
         return decide("web", on_fetch_approval, url)
@@ -305,7 +309,7 @@ def run_agent(
                                          "find_files",)
             # Web content can contain errors
             # Keep operation's status separate from content returned by search
-            uses_structured_result = is_file_tool or tool_name in ("web_search", "fetch_page", "fetch_pdf")
+            uses_structured_result = is_file_tool or tool_name in ("web_search", "fetch_page", "fetch_pdf", "render_page")
             file_result = None
 
             if checkpoint_error is not None or image_cleanup_error is not None or cancel_requested():
@@ -343,6 +347,11 @@ def run_agent(
                         result = tool_function(
                             **arguments,
                             on_fetch_approval=request_fetch_approval,
+                            should_cancel=cancel_requested,
+                        )
+                    elif tool_name == "render_page":
+                        result = tool_function(
+                            **arguments, on_fetch_approval=request_render_approval,
                             should_cancel=cancel_requested,
                         )
                     elif tool_name == "fetch_pdf":

@@ -320,7 +320,11 @@ def _request_fetch_pdf(url: str) -> dict:
     return result
 
 
-def _request_fetch_document(url: str, *, content_types: tuple[str, ...], max_bytes: int) -> dict:
+class ResourceRedirect(ValueError):
+    """A data redirect for the rendering broker to validate before following."""
+
+
+def _request_fetch_document(url: str, *, content_types: tuple[str, ...], max_bytes: int, browser_headers: bool = False, data_redirect: bool = False) -> dict:
     """ Read a bounded response through a checked, pinned connection """
 
     parts = parse_fetch_url(url)
@@ -361,6 +365,10 @@ def _request_fetch_document(url: str, *, content_types: tuple[str, ...], max_byt
         with connection.getresponse() as response:
             # Don't follow redirects
             if 300 <= response.status < 400:
+                if data_redirect and response.status in (301, 302, 303, 307, 308):
+                    location = response.getheader("Location")
+                    if location and len(location) <= MAX_FETCH_URL_CHARS:
+                        raise ResourceRedirect(location)
                 raise ValueError("Page redirects are not supported!")
             if response.status != 200:
                 raise ValueError(f"Page server returned HTTP {response.status}!")
@@ -390,13 +398,19 @@ def _request_fetch_document(url: str, *, content_types: tuple[str, ...], max_byt
             if expected_length is not None and len(body) != expected_length:
                 raise ValueError("Page response ended before its declared length!")
 
-            # Bytes stay inside the application
-            return {
+            result = {
                 "url": url,
                 "content_type": content_type,
                 "charset": charset,
                 "body": body
             }
+            if browser_headers:
+                result["headers"] = {"content-type": response.getheader("Content-Type")}
+                for name in ("content-security-policy", "x-content-type-options", "referrer-policy"):
+                    values = response.headers.get_all(name)
+                    if values:
+                        result["headers"][name] = ", ".join(values)
+            return result
     except PermissionError:
         # Destination-policy denial -> permission error
         raise
@@ -538,6 +552,14 @@ def fetch_page(
         on_fetch_approval: Callable[[str], bool] | None = None,
         should_cancel: Callable[[], bool] | None = None
 ) -> str:
+    return _approved_page(url, on_fetch_approval, should_cancel, rendered=False)
+
+
+def render_page(url: str, *, on_fetch_approval=None, should_cancel=None) -> str:
+    return _approved_page(url, on_fetch_approval, should_cancel, rendered=True)
+
+
+def _approved_page(url, on_fetch_approval, should_cancel, *, rendered):
     """ Fetch one page after approval of its exact url """
 
     # Check the address locally
@@ -563,8 +585,11 @@ def fetch_page(
     # Delay this import because the runtime also imports fetch helpers
     from agent_core.fetch_runtime import _collect_fetch_reply, _parse_fetch_reply
 
-    raw = _collect_fetch_reply(url, should_cancel=should_cancel)
-    result = _parse_fetch_reply(raw, url)
+    if rendered:
+        raw = _collect_fetch_reply(url, should_cancel=should_cancel, kind="render")
+    else:
+        raw = _collect_fetch_reply(url, should_cancel=should_cancel)
+    result = _parse_fetch_reply(raw, url, rendered=True) if rendered else _parse_fetch_reply(raw, url)
     check_cancel()
 
     # Match the JSON string format used by other tools

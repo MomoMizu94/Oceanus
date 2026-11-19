@@ -73,6 +73,28 @@ def _describe_fetch(url: str, *, pdf: bool) -> str:
     )
 
 
+def describe_page_render(url: str) -> str:
+    from agent_core.browser_render import MAX_REQUESTS, MAX_TOTAL_BYTES
+    parts = parse_fetch_url(url)
+    host = validate_fetch_host(parts.hostname)
+    return (
+        f"Render {url!r} in an isolated browser. Oceanus may send up to {MAX_REQUESTS} GET requests "
+        f"to the same origin ({parts.scheme}://{host}) for HTML, scripts, styles and data. "
+        f"The total download budget is {MAX_TOTAL_BYTES // 1048576} MiB over {FETCH_TOTAL_TIMEOUT:g} seconds. "
+        "The site receives your IP and requested paths and queries. "
+        "Oceanus omits browser cookies and credentials and blocks private addresses. Data requests may follow up to three same-origin redirects. "
+        f"The model and session receive the source URL and up to {MAX_FETCH_TEXT_CHARS} characters of untrusted page text."
+    )
+
+
+def approve_page_render(url: str) -> bool:
+    print(describe_page_render(url))
+    try:
+        return input("Render this page? [y/N]: ").strip().lower() == "y"
+    except EOFError:
+        return False
+
+
 def approve_page_fetch(url: str) -> bool:
     """Ask for approval in the terminal"""
     description = describe_page_fetch(url)

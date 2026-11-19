@@ -334,6 +334,9 @@ class OceanusApp(App):
     def request_web_approval(self, query: str) -> bool:
         return self.call_from_thread(self.show_web_approval, query)
 
+    def request_render_approval(self, url: str) -> bool:
+        return self.call_from_thread(self.show_render_approval, url)
+
     def request_pdf_fetch_approval(self, url: str) -> bool:
         return self.call_from_thread(self.show_pdf_fetch_approval, url)
 
@@ -427,6 +430,12 @@ class OceanusApp(App):
         return True
     
 
+    async def show_render_approval(self, url: str) -> bool:
+        if self.cancel_event.is_set():
+            return False
+        decision = await self.push_screen_wait(FetchApprovalScreen(url, rendered=True))
+        return decision is True and not self.cancel_event.is_set()
+
     async def show_pdf_fetch_approval(self, url: str) -> bool:
         if self.cancel_event.is_set():
             return False
@@ -480,6 +489,7 @@ class OceanusApp(App):
                 on_discovery_approval=self.request_discovery_approval,
                 on_web_approval=self.request_web_approval,
                 on_fetch_approval=self.request_fetch_approval,
+                on_render_approval=self.request_render_approval,
                 on_pdf_fetch_approval=self.request_pdf_fetch_approval,
                 attachments=attachments,
                 reasoning=reasoning,

@@ -23,6 +23,9 @@ dependencies = [
     "WeasyPrint>=70,<71",
 ]
 
+[project.optional-dependencies]
+browser = ["playwright==1.65.0"]
+
 # Both top-level packages belong to the same project.
 [tool.setuptools.packages.find]
 include = ["agent_core*", "agents*"]

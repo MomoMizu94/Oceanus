@@ -3,7 +3,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
-from agent_core.fetch_approval import describe_page_fetch, describe_pdf_fetch
+from agent_core.fetch_approval import describe_page_fetch, describe_pdf_fetch, describe_page_render
 
 
 class FetchApprovalScreen(ModalScreen[bool]):
@@ -45,10 +45,14 @@ class FetchApprovalScreen(ModalScreen[bool]):
     }
     """
 
-    def __init__(self, url: str, *, pdf: bool = False) -> None:
+    def __init__(self, url: str, *, pdf: bool = False, rendered: bool = False) -> None:
         super().__init__()
         self.heading = "Fetch this PDF?" if pdf else "Fetch this page?"
         self.description = describe_pdf_fetch(url) if pdf else describe_page_fetch(url)
+
+        if rendered:
+            self.heading = "Render this page?"
+            self.description = describe_page_render(url)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="fetch-dialog"):

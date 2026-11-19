@@ -4,6 +4,7 @@ import binascii
 import json
 import math
 import os
+import signal
 import selectors
 import subprocess
 import sys
@@ -59,12 +60,13 @@ def _collect_fetch_reply(
     # Reject oversized input before creating any JSON representation
     if len(url) > MAX_FETCH_JOB_BYTES:
         raise ValueError("Page worker request is too large!")
-    if kind not in ("page", "pdf"):
+    if kind not in ("page", "pdf", "render"):
         raise ValueError("Invalid fetch kind!")
     request = {"url": url}
     reply_limit = MAX_FETCH_REPLY_BYTES
+    if kind != "page":
+        request["kind"] = kind
     if kind == "pdf":
-        request["kind"] = "pdf"
         reply_limit = MAX_FETCH_PDF_REPLY_BYTES
     job = json.dumps(request, ensure_ascii=True).encode("ascii")
     if len(job) > MAX_FETCH_JOB_BYTES:
@@ -147,7 +149,13 @@ def _collect_fetch_reply(
             # wait() collects its exit status so it does not remain a zombie.
             try:
                 if process.poll() is None:
-                    process.kill()
+                    if kind == "render":
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    else:
+                        process.kill()
                 process.wait(timeout=1.0)
             finally:
                 process.stdin.close()
@@ -155,7 +163,7 @@ def _collect_fetch_reply(
 
 
 def _parse_fetch_envelope(
-    raw: bytes, url: str, *, reply_limit: int, pdf: bool = False,
+    raw: bytes, url: str, *, reply_limit: int, pdf: bool = False, rendered: bool = False,
 ) -> dict:
     """ Validate a worker reply and return the page or raise its error """
     if not isinstance(raw, bytes) or len(raw) > reply_limit:
@@ -178,6 +186,8 @@ def _parse_fetch_envelope(
         if not isinstance(reply["message"], str):
             raise ValueError("Invalid page worker error!")
 
+        if rendered and reply["error_type"] == "FileNotFoundError":
+            raise FileNotFoundError("Rendering requires Playwright, its Chromium build and Bubblewrap. See docs/browser-rendering-trial.md.")
         for error_class, message in FETCH_WORKER_ERRORS.items():
             if reply["error_type"] == error_class.__name__:
                 if pdf:
@@ -198,8 +208,8 @@ def _parse_fetch_envelope(
     return result
 
 
-def _parse_fetch_reply(raw: bytes, url: str) -> dict:
-    result = _parse_fetch_envelope(raw, url, reply_limit=MAX_FETCH_REPLY_BYTES)
+def _parse_fetch_reply(raw: bytes, url: str, *, rendered: bool = False) -> dict:
+    result = _parse_fetch_envelope(raw, url, reply_limit=MAX_FETCH_REPLY_BYTES, rendered=rendered)
     # Checks the dictionary's field names
     if set(result) != {"url", "content_type", "content", "truncated"}:
         raise ValueError("Invalid page worker result!")
