@@ -1,6 +1,7 @@
 """Find local conversation images and load bounded thumbnails."""
 
 from dataclasses import dataclass
+from hashlib import sha256
 from io import BytesIO
 import json
 import os
@@ -119,22 +120,34 @@ def conversation_images(text, *, attachments=None, kind='assistant'):
 
 
 def load_conversation_thumbnail(reference, workspace, *, attachment_dir=None):
+    thumbnail, dimensions, _ = load_changed_thumbnail(reference, workspace, None, attachment_dir=attachment_dir)
+    return thumbnail, dimensions
+
+
+def load_changed_thumbnail(reference, workspace, previous_digest, *, attachment_dir=None):
     if reference.attachment:
         stored = load_image_attachment(reference.source, attachment_dir=attachment_dir)
         raw = stored['data']
     else:
         # Displaying a model-supplied path must not grant new external file access
-        target = resolve_workspace_path(reference.source, Path(workspace), operation='read')
+        try:
+            target = resolve_workspace_path(reference.source, Path(workspace), operation='read')
+        except RuntimeError as error:
+            raise ValueError("Could not resolve the preview path") from error
         directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             raw = _read_image_file(Path(target.name), directory_fd=directory)
         finally:
             os.close(directory)
-        validate_image_bytes(raw)
 
+    digest = sha256(raw).digest()
+    if digest == previous_digest:
+        return None
+    if not reference.attachment:
+        validate_image_bytes(raw)
     with Image.open(BytesIO(raw)) as original:
         oriented = ImageOps.exif_transpose(original)
         dimensions = oriented.size
         oriented.thumbnail(MAX_THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
         thumbnail = oriented.convert('RGBA')
-    return thumbnail, dimensions
+    return thumbnail, dimensions, digest

@@ -227,13 +227,14 @@ def _dependency_warnings(skill: Skill, available_tools: set[str]) -> list[str]:
 
 def prepare_skill_prompt(
     base_prompt: str, task: str, *, available_tools: Iterable[str],
-    workspace: Path | None = None,
+    workspace: Path | None = None, earlier_tasks: Iterable[str] = (),
 ) -> tuple[str, list[str]]:
     """ Activate skills for this submitted task and all its model turns """
     names = workspace_skill_names(workspace)
-    for name in requested_skill_names(task):
-        if name not in names:
-            names.append(name)
+    for submission in (*earlier_tasks, task):
+        for name in requested_skill_names(submission):
+            if name not in names:
+                names.append(name)
     if not names:
         return base_prompt, []
     if len(names) > MAX_ACTIVE_SKILLS:

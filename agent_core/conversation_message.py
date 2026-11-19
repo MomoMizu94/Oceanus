@@ -3,7 +3,8 @@ from textual.containers import Vertical
 from textual.widgets import Static, Markdown, Collapsible
 from pathlib import Path
 
-from agent_core.conversation_images import conversation_images
+from agent_core.conversation_images import conversation_images, local_image_path
+from agent_core.conversation_links import LiteralMessageBody, conversation_markdown_parser, is_web_url
 from agent_core.image_preview import ImagePreview
 
 
@@ -44,19 +45,22 @@ class ConversationMessage(Vertical):
 
     ConversationMessage .message-heading {
         text-style: bold;
+        margin-bottom: 1;
     }
 
+    ConversationMessage.user,
     ConversationMessage.assistant {
-        margin-top: 1;
+        margin: 1 0 2 0;
     }
 
     ConversationMessage.assistant .message-heading {
         color: $text-accent;
     }
 
-    ConversationMessage.tool,
-    ConversationMessage.status {
-        margin-bottom: 0;
+    ConversationMessage.status .message-body,
+    ConversationMessage.notice .message-body,
+    ConversationMessage.error .message-body {
+        margin-left: 2;
     }
 
     ConversationMessage.tool .message-body {
@@ -64,9 +68,7 @@ class ConversationMessage(Vertical):
         color: $foreground-muted;
     }
 
-    ConversationMessage.status .message-heading,
     ConversationMessage.status .message-body,
-    ConversationMessage.notice .message-heading,
     ConversationMessage.notice .message-body {
         color: $foreground-muted;
     }
@@ -92,7 +94,8 @@ class ConversationMessage(Vertical):
     """
 
     def __init__(self, kind: str, text: str, *, heading: str | None = None,
-                 attachments=None, workspace: Path | None = None) -> None:
+                 attachments=None, workspace: Path | None = None,
+                 request_previews: dict[Path, ImagePreview] | None = None) -> None:
         if kind not in self.LABELS:
             raise ValueError(f"Unknown conversation message type: {kind}")
 
@@ -100,7 +103,25 @@ class ConversationMessage(Vertical):
         super().__init__(classes=kind)
         self.text = text
         self.workspace = Path.cwd() if workspace is None else Path(workspace)
-        self.image_references = conversation_images(text, attachments=attachments, kind=kind)
+        self.previews: list[ImagePreview] = []
+        self.image_links: dict[Path, ImagePreview] = {}
+        if request_previews is None:
+            request_previews = {}
+        for reference in conversation_images(text, attachments=attachments, kind=kind):
+            if reference.attachment:
+                self.previews.append(ImagePreview(reference, self.workspace))
+                continue
+
+            # Tool results may use an absolute path while the reply links to a relative one
+            path = self.workspace / reference.source
+            preview = request_previews.get(path)
+            if preview is None:
+                preview = ImagePreview(reference, self.workspace)
+                request_previews[path] = preview
+                self.previews.append(preview)
+            elif preview.is_mounted:
+                preview.refresh_thumbnail()
+            self.image_links[path] = preview
 
         if heading is None:
             self.heading = self.LABELS[kind]
@@ -119,6 +140,7 @@ class ConversationMessage(Vertical):
             yield Markdown(
                 self.text,
                 classes="message-body",
+                parser_factory=conversation_markdown_parser,
                 open_links=False,
             )
         elif self.has_class("tool"):
@@ -128,18 +150,22 @@ class ConversationMessage(Vertical):
                 collapsed=True,
                 classes="tool-details",
             ):
-                yield Static(
-                    self.text,
-                    classes="message-body",
-                    markup=False,
-                )
+                yield LiteralMessageBody(self.text)
         else:
             # Keep other message types literal
-            yield Static(
-                self.text,
-                classes="message-body",
-                markup=False,
-            )
+            yield LiteralMessageBody(self.text)
 
-        for reference in self.image_references:
-            yield ImagePreview(reference, self.workspace)
+        yield from self.previews
+
+    def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
+        event.stop()
+        if is_web_url(event.href):
+            self.app.open_url(event.href)
+            return
+        source = local_image_path(event.href)
+        if source is None:
+            return
+        preview = self.image_links.get(self.workspace / source)
+        if preview is not None:
+            preview.query_one(Collapsible).collapsed = False
+            preview.call_after_refresh(preview.scroll_visible, animate=False)

@@ -14,6 +14,7 @@ from agent_core.tools.directories import list_directory
 from agent_core.tools.search import search_files
 from agent_core.tools.edits import edit_file
 from agent_core.tools.discovery import find_files
+from agent_core.tools.reddit import search_reddit
 from agent_core.tools.web import web_search, MAX_QUERY_CHARS
 from agent_core.tools.fetch import fetch_page, render_page, MAX_FETCH_URL_CHARS
 from agent_core.tools.reports import export_pdf, export_canvas
@@ -601,6 +602,24 @@ TOOL_REGISTRY = {
             },
         },
     },
+    "search_reddit": {
+        "handler": search_reddit,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "search_reddit",
+                "description": "Find recent indexed threads from one named subreddit via Tavily. Use once per requested board. "
+                "Returns matching thread links and untrusted snippets. Results without a usable date are listed separately in unverified_date. Explain why each pick fits. "
+                "Search can miss new posts. Results do not represent Reddit Hot rankings.",
+                "strict": True,
+                "parameters": {"type": "object", "properties": {
+                    "subreddit": {"type": "string", "description": "Board name without r/."},
+                    "query": {"type": "string", "description": "Public topic keywords, or empty for general discovery."},
+                    "window": {"type": "string", "enum": ["day", "week", "month"]},
+                }, "required": ["subreddit", "query", "window"], "additionalProperties": False},
+            },
+        },
+    },
     "web_search": {
         "handler": web_search,
         "schema": {
@@ -642,7 +661,7 @@ TOOL_REGISTRY = {
             "function": {
                 "name": "fetch_page",
                 "description": (
-                    "Fetch readable text from one public HTTP or HTTPS URL. "
+                    "Fetch readable page text or RSS/Atom feed entries from one public HTTP or HTTPS URL. Feed entries include titles, available dates and article links. "
                     "The selected permission mode controls approval before DNS or network access. "
                     "Use standard ports and URLs without login credentials or secrets. "
                     "Returns JSON with url, content_type, content, and truncated. "
@@ -661,8 +680,12 @@ TOOL_REGISTRY = {
                             "maxLength": MAX_FETCH_URL_CHARS,
                             "description": "The exact public page URL to request approval for.",
                         },
+                        "only_new": {
+                            "type": "boolean",
+                            "description": "True for feed entries unseen since earlier checks. False for ordinary page and full feed reads. A first feed read establishes the baseline.",
+                        },
                     },
-                    "required": ["url"],
+                    "required": ["url", "only_new"],
                     "additionalProperties": False,
                 },
             },

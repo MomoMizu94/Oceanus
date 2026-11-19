@@ -38,7 +38,10 @@ def _describe_fetch(url: str, *, pdf: bool) -> str:
         f"{MAX_FETCH_TEXT_CHARS} returned characters, "
         f"{FETCH_TOTAL_TIMEOUT:g} seconds for the worker job."
     )
-    pdf_details = ""
+    storage_details = (
+        "If this URL returns a feed, Oceanus marks the returned entries as seen "
+        "for future checks across your sessions and workspaces.\n"
+    )
     if pdf:
         scope = "one PDF download and offline page extraction"
         limits = (
@@ -47,7 +50,7 @@ def _describe_fetch(url: str, *, pdf: bool) -> str:
             f"{FETCH_TOTAL_TIMEOUT:g} seconds to download and "
             f"{PDF_READ_TIMEOUT:g} seconds to extract."
         )
-        pdf_details = (
+        storage_details = (
             "PDF bytes stay in memory; no PDF file is saved. The selected page number "
             "and document hash also reach the model and session. Each continuation "
             "downloads the entire PDF again and uses the current permission mode. "
@@ -59,7 +62,7 @@ def _describe_fetch(url: str, *, pdf: bool) -> str:
         f"Destination: {parts.scheme}://{authority}\n"
         f"Scope: {scope}. Redirects and private/local addresses are blocked.\n"
         f"Limits: {limits}\n"
-        f"{pdf_details}"
+        f"{storage_details}"
         "The hostname may be sent to your DNS resolver. The website receives your "
         "network IP address, URL path, query, and fixed request headers. "
         "The URL fragment after # is not sent to the website.\n"

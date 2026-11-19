@@ -10,6 +10,7 @@ from textual.binding import Binding
 
 from agent_core.prompt_image_edit import ImageMarker, PromptEdit
 from agent_core.clipboard_images import read_clipboard_image
+from agent_core.skill_picker import SkillPicker
 from agent_core.image_attachments import MAX_IMAGES_PER_MESSAGE, save_image_bytes
 
 
@@ -30,6 +31,7 @@ class PromptEditor(TextArea):
 
     BINDINGS = [
         Binding("ctrl+v", "paste_image", "Paste image"),
+        Binding("f2", "choose_skill", "Skills"),
     ]
 
     DEFAULT_CSS = """
@@ -104,6 +106,18 @@ class PromptEditor(TextArea):
             attachments.append(attachment)
 
         return attachments
+
+    def action_choose_skill(self) -> None:
+        if self.disabled or self.read_only or self.paste_pending:
+            return
+        self.app.push_screen(SkillPicker(), self.insert_chosen_skill)
+
+    def insert_chosen_skill(self, name: str | None) -> None:
+        if name is not None and not self.disabled and not self.read_only:
+            # Keep the draft's first line intact, including Markdown fences
+            separator = "\n" if self.text else " "
+            self.insert(f"${name}{separator}", (0, 0))
+        self.focus()
 
     def action_paste_image(self) -> None:
         if self.disabled or self.read_only or self.paste_pending:

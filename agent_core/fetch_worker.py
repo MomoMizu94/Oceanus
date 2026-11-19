@@ -3,7 +3,8 @@ import base64
 import json
 import sys
 
-from agent_core.tools.fetch import _request_fetch_page, _request_fetch_pdf, _extract_fetch_text
+from agent_core.feed_reader import FEED_TYPES, extract_feed
+from agent_core.tools.fetch import MAX_FETCH_TEXT_CHARS, _request_fetch_page, _request_fetch_pdf, _extract_fetch_text
 from agent_core.pdf_read_limits import MAX_PDF_INPUT_BYTES
 
 
@@ -27,14 +28,16 @@ def _run_fetch_job(url: str) -> dict:
         # Download the page
         page = _request_fetch_page(url)
         # Extract the text
-        extracted = _extract_fetch_text(page["body"], page["charset"], page["content_type"])
+        if page["content_type"] in FEED_TYPES:
+            extracted = extract_feed(page["body"], page["url"], MAX_FETCH_TEXT_CHARS, charset=page["charset"])
+        else:
+            extracted = _extract_fetch_text(page["body"], page["charset"] or "utf-8", page["content_type"])
         return {
             "status": "success",
             "result": {
                 "url": page["url"],
                 "content_type": page["content_type"],
-                "content": extracted["content"],
-                "truncated": extracted["truncated"]
+                **extracted,
             }
         }
     except Exception as error:

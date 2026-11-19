@@ -10,13 +10,13 @@ def describe_web_search(query: str) -> str:
 
     return (
         "Provider: Tavily\n"
-        "Destination: https://api.tavily.com/search\n"
-        f"Exact query: {exact_query!r}\n"
-        f"Scope: one basic web search, up to {MAX_SEARCH_RESULTS} results.\n"
-        "The query and fixed search settings will be sent to Tavily.\n"
+        "Destination: https://api.tavily.com/search\n\n"
+        f"Exact query: {exact_query!r}\n\n"
+        f"Scope: one basic web search, up to {MAX_SEARCH_RESULTS} results returned to the model.\n\n"
+        "The query and search settings will be sent to Tavily.\n"
         "No files or conversation history are attached automatically. "
-        "The query itself may still contain private information; review it.\n"
-        "Search results reach the selected model and may be saved in the session.\n"
+        "The query itself may still contain private information; review it.\n\n"
+        "Search results reach the selected model and may be saved in the session.\n\n"
         "Approval allows this search only, not opening result pages or "
         "enabling shell networking."
     )

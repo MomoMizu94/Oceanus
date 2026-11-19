@@ -4,6 +4,7 @@ import binascii
 import json
 import math
 import os
+import re
 import signal
 import selectors
 import subprocess
@@ -12,13 +13,14 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from agent_core.feed_reader import FEED_TYPES, MAX_ENTRIES
 from agent_core.fetch_worker import (
     MAX_FETCH_JOB_BYTES,
     MAX_FETCH_REPLY_BYTES,
     MAX_FETCH_PDF_REPLY_BYTES,
     FETCH_WORKER_ERRORS,
 )
-from agent_core.tools.fetch import MAX_FETCH_TEXT_CHARS
+from agent_core.tools.fetch import MAX_FETCH_TEXT_CHARS, PAGE_CONTENT_TYPES
 from agent_core.pdf_read_limits import MAX_PDF_INPUT_BYTES
 
 
@@ -211,13 +213,18 @@ def _parse_fetch_envelope(
 def _parse_fetch_reply(raw: bytes, url: str, *, rendered: bool = False) -> dict:
     result = _parse_fetch_envelope(raw, url, reply_limit=MAX_FETCH_REPLY_BYTES, rendered=rendered)
     # Checks the dictionary's field names
-    if set(result) != {"url", "content_type", "content", "truncated"}:
+    fields = {"url", "content_type", "content", "truncated"}
+    is_feed = not rendered and result.get("content_type") in FEED_TYPES
+    if is_feed:
+        fields.add("entry_keys")
+    if set(result) != fields:
         raise ValueError("Invalid page worker result!")
 
     # Keep the exact requested URL as the source
     if result["url"] != url:
         raise ValueError("Page worker returned a different URL!")
-    if result["content_type"] not in ("text/html", "text/plain"):
+    supported_types = ("text/html", "text/plain") if rendered else PAGE_CONTENT_TYPES
+    if result["content_type"] not in supported_types:
         raise ValueError("Invalid page content type!")
 
     content = result["content"]
@@ -234,6 +241,13 @@ def _parse_fetch_reply(raw: bytes, url: str, *, rendered: bool = False) -> dict:
         if number < 32 or 127 <= number <= 159 or 0xD800 <= number <= 0xDFFF:
             raise ValueError("Invalid page text!")
 
+    if is_feed:
+        keys = result["entry_keys"]
+        entry_count = content.count("\n") + 1 if content else 0
+        if not isinstance(keys, list) or len(keys) != entry_count or len(keys) > MAX_ENTRIES:
+            raise ValueError("Invalid feed entry count.")
+        if any(not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key) for key in keys):
+            raise ValueError("Invalid feed entry key.")
     return result
 
 

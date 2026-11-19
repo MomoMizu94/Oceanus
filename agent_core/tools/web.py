@@ -47,7 +47,7 @@ def build_search_payload(query: str) -> dict:
     }
 
 
-def parse_search_response(data: dict) -> dict:
+def parse_search_response(data: dict, *, include_dates: bool = False, max_results: int = MAX_SEARCH_RESULTS) -> dict:
     """ Keep a set of search results from Tavily JSON """
 
     # Missing results list
@@ -61,11 +61,11 @@ def parse_search_response(data: dict) -> dict:
     # Report when results are omitted or shortened
     parsed = {
         "results": [],
-        "truncated": len(results) > MAX_SEARCH_RESULTS
+        "truncated": len(results) > max_results
     }
 
-    # Process first 5 results, preserving order
-    for result in results[:MAX_SEARCH_RESULTS]:
+    # Preserve provider order within the requested limit
+    for result in results[:max_results]:
         if not isinstance(result, dict):
             raise ValueError("Each search result must be an object!")
 
@@ -89,15 +89,19 @@ def parse_search_response(data: dict) -> dict:
             parsed["truncated"] = True
 
         # Copy necessary fields
-        parsed["results"].append({
+        item = {
             "title": title[:MAX_SEARCH_TITLE_CHARS],
             "url": url,
             "snippet": snippet[:MAX_SEARCH_SNIPPET_CHARS],
             "title_truncated": title_truncated,
             "snippet_truncated": snippet_truncated
-        })
+        }
+        if include_dates:
+            date = result.get("published_date")
+            if isinstance(date, str) and len(date) <= 100 and date.isprintable():
+                item["published_date"] = date
+        parsed["results"].append(item)
 
-    
     return parsed
 
 
@@ -106,6 +110,10 @@ def _request_tavily_search(query: str) -> dict:
 
     # Reuse fixed settings
     payload = build_search_payload(query)
+    return _send_search_payload(payload)
+
+
+def _send_search_payload(payload: dict) -> dict:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
     # Read the key if needed
@@ -160,7 +168,8 @@ def _request_tavily_search(query: str) -> dict:
         raise ValueError("Tavily returned invalid JSON!") from None
 
     # Hand it to existing response parser
-    return parse_search_response(data)
+    return parse_search_response(data, include_dates=bool(payload.get("include_published_date")),
+                                 max_results=payload["max_results"])
 
 def web_search(query: str, *, on_web_approval: Callable[[str], bool] | None = None) -> str:
     """ Search Tavily only after approval of this query """

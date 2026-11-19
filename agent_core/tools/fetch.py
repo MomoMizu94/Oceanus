@@ -5,9 +5,15 @@ import ssl
 import http.client
 from html.parser import HTMLParser
 import json
+import sqlite3
 from collections.abc import Callable
 
 
+from agent_core.feed_reader import FEED_TYPES
+from agent_core.memory.feeds import record_feed_read
+
+
+PAGE_CONTENT_TYPES = ("text/html", "text/plain", *FEED_TYPES)
 MAX_FETCH_URL_CHARS = 2048
 # Limit IPv6 fetching to the global unicast address range
 FETCH_IPV6_PUBLIC_RANGE = ipaddress.ip_network("2000::/3")
@@ -302,9 +308,9 @@ def _open_fetch_socket(hostname: str, address: str, scheme: str) -> socket.socke
         raise
 
 def _request_fetch_page(url: str) -> dict:
-    """ Download one approved HTML or plain-text page """
+    """ Download one approved page or syndication feed """
     return _request_fetch_document(
-        url, content_types=("text/html", "text/plain"), max_bytes=MAX_FETCH_RESPONSE_BYTES,
+        url, content_types=PAGE_CONTENT_TYPES, max_bytes=MAX_FETCH_RESPONSE_BYTES,
     )
 
 
@@ -385,7 +391,7 @@ def _request_fetch_document(url: str, *, content_types: tuple[str, ...], max_byt
             content_type = response.headers.get_content_type()
             if content_type not in content_types:
                 raise ValueError("Response content type is not supported by this tool!")
-            charset = response.headers.get_content_charset() or "utf-8"
+            charset = response.headers.get_content_charset()
 
             # Reject an oversized declared body before reading, but also cap the read
             # for chunked responses and responses with no declared length.
@@ -549,17 +555,20 @@ def _extract_fetch_text(body: bytes, charset: str, content_type: str) -> dict:
 def fetch_page(
         url: str,
         *,
+        only_new: bool = False,
         on_fetch_approval: Callable[[str], bool] | None = None,
         should_cancel: Callable[[], bool] | None = None
 ) -> str:
-    return _approved_page(url, on_fetch_approval, should_cancel, rendered=False)
+    if type(only_new) is not bool:
+        raise ValueError("only_new must be a boolean.")
+    return _approved_page(url, on_fetch_approval, should_cancel, rendered=False, only_new=only_new)
 
 
 def render_page(url: str, *, on_fetch_approval=None, should_cancel=None) -> str:
     return _approved_page(url, on_fetch_approval, should_cancel, rendered=True)
 
 
-def _approved_page(url, on_fetch_approval, should_cancel, *, rendered):
+def _approved_page(url, on_fetch_approval, should_cancel, *, rendered, only_new=False):
     """ Fetch one page after approval of its exact url """
 
     # Check the address locally
@@ -591,6 +600,25 @@ def _approved_page(url, on_fetch_approval, should_cancel, *, rendered):
         raw = _collect_fetch_reply(url, should_cancel=should_cancel)
     result = _parse_fetch_reply(raw, url, rendered=True) if rendered else _parse_fetch_reply(raw, url)
     check_cancel()
+
+    if "entry_keys" in result:
+        keys = result.pop("entry_keys")
+        lines = result["content"].split("\n") if keys else []
+        try:
+            first_check, unseen = record_feed_read(url, keys, lines, check_cancel)
+        except InterruptedError:
+            raise
+        except (OSError, sqlite3.Error) as error:
+            if only_new:
+                raise OSError("Feed history unavailable. Could not identify new entries.") from error
+            result["feed_history"] = "unavailable"
+        else:
+            result["feed_history"] = "first_check" if first_check else "previously_checked"
+            result["new_entries"] = None if first_check else len(unseen)
+            if only_new:
+                result["content"] = "\n".join(unseen)
+    elif only_new:
+        raise ValueError("This URL returned a page. Checking for new entries requires an RSS or Atom feed.")
 
     # Match the JSON string format used by other tools
     return json.dumps(result, ensure_ascii=False)

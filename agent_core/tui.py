@@ -22,7 +22,7 @@ from agent_core.memory.recovery import (
 from agent_core.shell_sandbox import validate_workspace_root
 from agent_core.workspace_screen import WorkspaceScreen
 from agent_core.session_picker import SessionPicker
-from agent_core.model_client import DEFAULT_MODEL
+from agent_core.model_client import DEFAULT_MODEL, QWEN_Q4_MODEL
 from agent_core.model_discovery import list_ollama_models
 from agent_core.edit_approval_screen import EditApprovalScreen
 from agent_core.sensitive_approval_screen import SensitiveApprovalScreen
@@ -32,6 +32,7 @@ from agent_core.tools.registry import TOOL_REGISTRY
 from agent_core.web_approval_screen import WebApprovalScreen
 from agent_core.fetch_approval_screen import FetchApprovalScreen
 from agent_core.conversation_message import ConversationMessage
+from agent_core.image_preview import ImagePreview
 from agent_core.wal_theme import load_wal_theme
 from agent_core.prompt_editor import PromptEditor
 from agent_core.reasoning_selector import ReasoningSelector
@@ -44,9 +45,11 @@ class OceanusApp(App):
     """ A terminal interface (TUI) for Oceanus """
 
     TITLE = "Oceanus"
+    VERTICAL_BREAKPOINTS = [(0, "-short"), (22, "-regular-height")]
 
     BINDINGS = [
         Binding("ctrl+x", "cancel_task", "Cancel task", priority=True),
+        Binding("escape", "interrupt_conversation", "Cancel task", show=False),
         ("ctrl+o", "open_session", "Open session"),
         ("ctrl+s", "save_session", "Save session"),
         ("ctrl+q", "quit", "Quit")
@@ -101,9 +104,46 @@ class OceanusApp(App):
         max-width: 80;
     }
 
+    ModalScreen > Vertical > Static:first-child {
+        border-left: thick $primary;
+        padding-left: 1;
+        margin-bottom: 2;
+        color: $text-accent;
+        text-style: bold;
+    }
+
+    ModalScreen > Vertical > VerticalScroll {
+        padding: 0 1;
+    }
+
+    ModalScreen > Vertical > VerticalScroll > Static {
+        margin-bottom: 1;
+    }
+
+    ModalScreen > Vertical > OptionList {
+        margin: 1 0;
+    }
+
+    ModalScreen > Vertical > OptionList > .option-list--option {
+        padding: 0 1 1 1;
+    }
+
+    ModalScreen.-short > Vertical {
+        height: 100%;
+        padding: 0 2;
+    }
+
     #task-input {
         dock: bottom;
         margin: 1 0;
+    }
+
+    #pending-prompts {
+        display: none;
+        height: auto;
+        max-height: 5;
+        border-top: solid $primary;
+        padding: 0 2;
     }
     """
 
@@ -123,6 +163,10 @@ class OceanusApp(App):
         self.model = DEFAULT_MODEL
         self.busy = False
         self.cancel_event = Event()
+        self.pending_messages: list[dict] = []
+        self.request_previews: dict[Path, ImagePreview] = {}
+        # The UI owns the queue. The worker only checks this flag between tool batches
+        self.followup_event = Event()
         self.conversation_history: list[dict] = []
         self.active_messages: list[dict] | None = None
         self.workspace = Path.cwd().resolve()
@@ -155,6 +199,9 @@ class OceanusApp(App):
             yield ReasoningSelector(id="reasoning-select")
 
         yield VerticalScroll(id="conversation")
+        with VerticalScroll(id="pending-prompts") as pending:
+            pending.border_title = "Queued"
+            yield Static("", id="pending-text", markup=False)
         yield PromptEditor(
             disabled=True,
             id="task-input"
@@ -185,13 +232,12 @@ class OceanusApp(App):
             ]
         )
 
-        preferred = "ollama_chat/qwen2.5:7b"
         available = {value for _, value in local_options}
-
-        if preferred in available:
-            self.model = preferred
-        else:
-            self.model = local_options[0][1] if local_options else DEFAULT_MODEL
+        self.model = local_options[0][1] if local_options else DEFAULT_MODEL
+        for preferred in (QWEN_Q4_MODEL, "ollama_chat/qwen2.5:7b"):
+            if preferred in available:
+                self.model = preferred
+                break
 
         selector.value = self.model
         self.query_one(ReasoningSelector).set_model(self.model)
@@ -227,8 +273,11 @@ class OceanusApp(App):
     ) -> None:
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_output = conversation.is_vertical_scroll_end
+        if kind == "user":
+            self.request_previews.clear()
         entry = ConversationMessage(
             kind, message, heading=heading, attachments=attachments, workspace=self.workspace,
+            request_previews=self.request_previews,
         )
         conversation.mount(entry)
 
@@ -249,13 +298,38 @@ class OceanusApp(App):
         task_input = self.query_one("#task-input", PromptEditor)
         task = event.text
 
-        if self.busy or task_input.disabled or task_input.read_only or task_input.paste_pending:
+        if task_input.disabled or task_input.read_only or task_input.paste_pending:
             return
         # Keep image-only prompts and preserve the user's exact text
         if not task.strip() and not event.attachments:
             return
 
-        attachments = deepcopy(event.attachments)
+        if self.busy and self.cancel_event.is_set():
+            self.notify("Wait for cancellation to finish before sending.")
+            return
+        message = {"role": "user", "content": task}
+        if event.attachments:
+            message["attachments"] = deepcopy(event.attachments)
+        task_input.load_text("")
+        if self.busy:
+            self.pending_messages.append(message)
+            self.followup_event.set()
+            self.refresh_pending_prompts()
+            return
+        self.start_messages([message])
+
+    def refresh_pending_prompts(self) -> None:
+        panel = self.query_one("#pending-prompts", VerticalScroll)
+        panel.display = bool(self.pending_messages)
+        rows = []
+        for message in self.pending_messages:
+            text = message["content"].strip() or "Image attachment"
+            rows.append(text)
+        panel.query_one(Static).update("\n".join(rows))
+        if rows:
+            panel.scroll_end(animate=False)
+
+    def start_messages(self, messages: list[dict]) -> None:
         self.cancel_event.clear()
         self.busy = True
         self.query_one("#model-select", Select).disabled = True
@@ -271,15 +345,14 @@ class OceanusApp(App):
         self.sub_title = f"{self.model} | Working..."
         if not self.conversation_history:
             self.write_message(f"Recovery checkpoints: {self.session_path}", kind="status")
-        self.write_user_message(task, attachments)
+        for message in messages:
+            self.write_user_message(message["content"], message.get("attachments"))
+        self.query_one(PromptEditor).border_title = "Prompt · Enter queues a follow-up"
 
-        # Start a fresh draft with no undo history from the sent prompt
-        task_input.load_text("")
-        task_input.disabled = True
-
+        latest = messages[-1]
         self.run_task(
-            task, deepcopy(self.conversation_history), self.model,
-            attachments=attachments,
+            latest["content"], deepcopy(self.conversation_history), self.model,
+            attachments=latest.get("attachments", []), earlier_submissions=messages[:-1],
             reasoning=reasoning,
             permission_mode=permission_mode,
             active_messages=deepcopy(self.active_messages),
@@ -454,6 +527,7 @@ class OceanusApp(App):
     def run_task(
         self, task: str, history: list[dict], model: str,
         *, attachments: list[dict] | None = None,
+        earlier_submissions: list[dict] | None = None,
         reasoning: str | bool | None = None,
         permission_mode: PermissionMode = PermissionMode.ASK,
         active_messages: list[dict] | None = None,
@@ -466,10 +540,15 @@ class OceanusApp(App):
             coding_prompt = build_system_prompt(self.coding_prompt, workspace=self.workspace)
             coding_prompt, skill_notices = prepare_skill_prompt(
                 coding_prompt, task, available_tools=TOOL_REGISTRY, workspace=self.workspace,
+                earlier_tasks=[item["content"] for item in earlier_submissions or []],
             )
             coding_prompt += permission_instructions(permission_mode)
             for notice in skill_notices:
                 self.report_progress(notice)
+            # The initial checkpoint includes every queued message, in submission order
+            if earlier_submissions:
+                history.extend(deepcopy(earlier_submissions))
+                active_messages.extend(deepcopy(earlier_submissions))
             answer = run_agent(
                 task,
                 model=model,
@@ -482,6 +561,7 @@ class OceanusApp(App):
                 on_file_approval=self.request_file_approval,
                 on_tool_result=self.report_tool_result,
                 should_cancel=self.cancel_event.is_set,
+                followups_waiting=self.followup_event.is_set,
                 on_tool_status=self.report_tool_status,
                 on_search_approval=self.request_search_approval,
                 on_edit_approval=self.request_edit_approval,
@@ -519,7 +599,7 @@ class OceanusApp(App):
             )
 
     def finish_task(
-        self, message: str, history: list[dict] | None, *, failed: bool = False,
+        self, message: str | None, history: list[dict] | None, *, failed: bool = False,
         active_messages: list[dict] | None = None,
     ) -> None:
         # Keep submitted attachments and completed tool actions after a failure
@@ -531,7 +611,27 @@ class OceanusApp(App):
         else:
             kind = "assistant"
 
-        self.write_message(message, kind=kind)
+        if message is not None:
+            self.write_message(message, kind=kind)
+
+        pending = self.pending_messages
+        self.pending_messages = []
+        self.followup_event.clear()
+        if pending:
+            self.refresh_pending_prompts()
+            # Only hand off a completed answer or a fully recorded tool batch
+            last_reply = history[-1] if history else {}
+            answered = (
+                last_reply.get("role") == "assistant"
+                and not last_reply.get("tool_calls")
+                and (last_reply.get("content") or "") == message
+            )
+            if not failed and not self.cancel_event.is_set() and (message is None or answered):
+                self.start_messages(pending)
+                return
+            for item in pending:
+                self.write_message(item["content"], kind="user", heading="Unsent follow-up",
+                                   attachments=item.get("attachments"))
         self.busy = False
         self.sub_title = self.model
         self.query_one("#model-select", Select).disabled = False
@@ -540,6 +640,7 @@ class OceanusApp(App):
         self.query_one(TurnSelector).set_task_busy(False)
 
         task_input = self.query_one("#task-input", PromptEditor)
+        task_input.border_title = "Prompt"
         task_input.disabled = False
         task_input.focus()
 
@@ -636,6 +737,7 @@ class OceanusApp(App):
         self.session_path = path
         conversation = self.query_one("#conversation", VerticalScroll)
         conversation.remove_children()
+        self.request_previews.clear()
 
         # Display saved content without changing the model's history
         for message in history:
@@ -674,6 +776,10 @@ class OceanusApp(App):
             return
 
         self.write_message(f"Session saved: {self.session_path}")
+
+    def action_interrupt_conversation(self) -> None:
+        if len(self.screen_stack) == 1:
+            self.action_cancel_task()
 
     def action_cancel_task(self) -> None:
         if not self.busy or self.cancel_event.is_set():

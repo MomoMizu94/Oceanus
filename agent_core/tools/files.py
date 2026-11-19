@@ -123,7 +123,12 @@ def read_file_lines(
         raise ValueError("end_line must be an integer at least start_line")
 
     if end_line - start_line + 1 > MAX_READ_LINES:
-        raise ValueError(f"Request at most {MAX_READ_LINES} lines per read operation")
+        last_allowed = start_line + MAX_READ_LINES - 1
+        raise ValueError(
+            f"Request at most {MAX_READ_LINES} lines per read operation. "
+            f"For start_line={start_line}, use end_line={last_allowed} or smaller, "
+            "then continue from the returned next_line if needed."
+        )
 
     file_path = resolve_workspace_path(
         path,
@@ -145,6 +150,11 @@ def read_file_lines(
 
             text = source.readline(read_limit + 1)
             if not text:
+                if start_line > 1 and number <= start_line:
+                    raise ValueError(
+                        f"start_line={start_line} is beyond the end of the file. "
+                        f"The file has {number - 1} lines."
+                    )
                 break
 
             if len(text) > read_limit:
@@ -162,9 +172,6 @@ def read_file_lines(
 
         # Check whether more content follows after limit
         truncated = bool(source.read(1))
-
-    if not lines and start_line > 1:
-        raise ValueError("start_line is beyond the end of the file!")
 
     last_line = None
     next_line = None

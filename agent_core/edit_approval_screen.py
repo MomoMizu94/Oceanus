@@ -1,9 +1,32 @@
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content, Span
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
 from agent_core.edit_approval import describe_edit
+
+
+def format_edit_diff(path: str, diff: str) -> Content:
+    description = describe_edit(path, diff)
+    spans = []
+    offset = 0
+    in_hunk = False
+    for line in description.splitlines(keepends=True):
+        style = None
+        if line.startswith("@@"):
+            in_hunk = True
+            style = "bold $accent"
+        elif not in_hunk and line.startswith(("--- ", "+++ ")):
+            style = "bold $primary"
+        elif line.startswith("+"):
+            style = "$success"
+        elif line.startswith("-"):
+            style = "$error"
+        if style:
+            spans.append(Span(offset, offset + len(line.rstrip("\n")), style))
+        offset += len(line)
+    return Content(description, spans)
 
 
 class EditApprovalScreen(ModalScreen[bool]):
@@ -56,7 +79,7 @@ class EditApprovalScreen(ModalScreen[bool]):
             yield Static("Allow this file edit?")
 
             with VerticalScroll(id="edit-details"):
-                yield Static(describe_edit(self.path, self.diff), id="edit-info", markup=False)
+                yield Static(format_edit_diff(self.path, self.diff), id="edit-info", markup=False)
                 
             with Horizontal(id="edit-buttons"):
                 yield Button("Deny", id="deny")

@@ -1,22 +1,29 @@
 # Call the model, execute requested tools, append results, and repeat until done
 import json
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from copy import deepcopy
 
 from agent_core.model_client import (
-    call_model, DEFAULT_MODEL, ModelResponseError, ModelOutputTruncatedError,
+    call_model, DEFAULT_MODEL, QWEN_Q4_MODEL, ModelResponseError, ModelOutputTruncatedError,
 )
 from agent_core.tools.registry import get_tool_function, get_tool_schemas, TOOL_REGISTRY
+from agent_core.tools.reddit import RedditLookupScope
 from agent_core.shell_sandbox import ShellSandboxError
 from agent_core.compaction_runtime import compact_before_request
 from agent_core.turn_budget import build_turn_budget_request
-from agent_core.output_recovery import MAX_OUTPUT_RECOVERY_ATTEMPTS, build_recovery_request
+from agent_core.tool_progress import describe_tool_outcome
+from agent_core.output_recovery import (
+    MAX_OUTPUT_RECOVERY_ATTEMPTS, RECOVERY_FINAL_GUIDANCE, RECOVERY_STEP_GUIDANCE,
+    build_recovery_request, qwen_recovery_context,
+)
 from agent_core.memory.recovery import CheckpointError, save_recovery_checkpoint
 from agent_core.permissions import PermissionMode, automatically_approve
 from agent_core.local_image_runtime import ImageCleanupError
 
 DEFAULT_MAX_TURNS = 30
+PROGRESS_AFTER_TOOL_CALLS = 3
 
 def run_agent(
         task: str,
@@ -45,8 +52,9 @@ def run_agent(
         active_messages: list[dict] | None = None,
         checkpoint_path: str | None = None,
         permission_mode: PermissionMode | str = PermissionMode.ASK,
-        ) -> str:
-    """ Run a task until model answers or hits limit """
+        followups_waiting: Callable[[], bool] | None = None,
+        ) -> str | None:
+    """Run a task. Return None for a requested handoff after a complete tool batch."""
 
     permission_mode = PermissionMode(permission_mode)
 
@@ -56,6 +64,8 @@ def run_agent(
     ) -> bool:
         if cancel_requested():
             return False
+        if action == "web":
+            reddit_scope.check_web_request(arguments[0])
         auto_approved = automatically_approve(
             permission_mode, action, workspace_root, path=path, command=command,
         )
@@ -189,10 +199,22 @@ def run_agent(
     if checkpoint_error is not None:
         return checkpoint_error
 
+    # Queued user messages can name several boards for the same task
+    current_prompts = []
+    for message in reversed(conversation_history):
+        if message.get("role") != "user":
+            break
+        current_prompts.append(message["content"])
+    reddit_scope = RedditLookupScope(current_prompts)
+
     compacted_this_task = False
     recovery_attempts = 0
     recovery_pending = False
+    recovering_qwen = False
+    request_reasoning = reasoning
+    recent_outcomes: deque[str] = deque(maxlen=PROGRESS_AFTER_TOOL_CALLS)
     tool_schemas = get_tool_schemas(permitted_tools)
+    first_edit_turn = None
 
     for turn in range(1, max_turns + 1):
         report_progress(f"This is model turn: {turn}/{max_turns}")
@@ -201,13 +223,33 @@ def run_agent(
         if cancel_requested():
             return "Task cancelled."
 
+        if followups_waiting is not None and followups_waiting():
+            return None
+
         try:
-            request_messages = build_turn_budget_request(active_messages, turn, max_turns)
-            if recovery_pending:
+            progress_due = len(recent_outcomes) == PROGRESS_AFTER_TOOL_CALLS
+            context = active_messages
+            if recovering_qwen:
+                context = qwen_recovery_context(active_messages)
+            request_messages = build_turn_budget_request(
+                context, turn, max_turns, progress_due=progress_due,
+                first_edit_done=first_edit_turn == turn - 1,
+            )
+            request_tools = permitted_tools
+            request_schemas = tool_schemas
+            final_recovery_turn = recovering_qwen and turn == max_turns
+            if final_recovery_turn:
+                request_tools = set()
+                request_schemas = []
+                # Count the notice without replacing the user task protected by compaction
+                request_messages.append({"role": "system", "content": RECOVERY_FINAL_GUIDANCE})
+            elif recovery_pending:
                 request_messages = build_recovery_request(request_messages)
+            elif recovering_qwen:
+                request_messages = build_recovery_request(request_messages, guidance=RECOVERY_STEP_GUIDANCE)
             # Every previous tool batch is complete before reaching this boundary
             compacted = compact_before_request(
-                request_messages, tool_schemas, model=model, reasoning=reasoning,
+                request_messages, request_schemas, model=model, reasoning=request_reasoning,
                 already_compacted=compacted_this_task,
                 should_cancel=cancel_requested, on_progress=report_progress,
             )
@@ -217,8 +259,10 @@ def run_agent(
                 retained_messages = deepcopy(request_messages)
                 if active_messages and active_messages[0].get("role") == "system":
                     retained_messages[0] = deepcopy(active_messages[0])
-                else:
+                elif retained_messages[0].get("role") == "system":
                     retained_messages.pop(0)
+                if final_recovery_turn:
+                    retained_messages.pop()
                 active_messages[:] = retained_messages
             # Compaction's own checkpoint
             if compacted:
@@ -227,11 +271,16 @@ def run_agent(
                     return checkpoint_error
             if cancel_requested():
                 return "Task cancelled."
+            if followups_waiting is not None and followups_waiting():
+                return None
+            if final_recovery_turn:
+                # Qwen treats a trailing user-role message as a request to answer the tool results
+                request_messages[-1] = {"role": "user", "content": RECOVERY_FINAL_GUIDANCE}
             reply = call_model(
                 request_messages,
                 model=model,
-                allowed_tools=permitted_tools,
-                reasoning=reasoning,
+                allowed_tools=request_tools,
+                reasoning=request_reasoning,
             )
         except InterruptedError:
             return "Task cancelled."
@@ -251,9 +300,14 @@ def run_agent(
 
             recovery_attempts += 1
             recovery_pending = True
+            retry_notice = "The retry uses the next model turn."
+            recovering_qwen = model == QWEN_Q4_MODEL
+            if recovering_qwen and reasoning is None:
+                request_reasoning = False
+                retry_notice += " Turning off model thinking for the rest of this task."
             report_progress(
                 "Output limit reached. Retrying once with guidance for a smaller, complete response. "
-                "The retry uses the next model turn; reasoning and output limits are unchanged."
+                + retry_notice
             )
             continue
         # For token limits and failed compaction
@@ -284,13 +338,20 @@ def run_agent(
             return reply.content or ""
 
         # Show explanations regarding the requested tools
-        if reply.content:
+        if reply.content and reply.content.strip():
             report_progress(f"Agent: {reply.content}")
+            recent_outcomes.clear()
 
         image_cleanup_error = None
         for tool_call in reply.tool_calls:
             # Translate requests into function calls
             tool_name = tool_call.function.name
+            display_name = tool_name if tool_name in registered_tools else "unknown tool"
+            if len(recent_outcomes) == PROGRESS_AFTER_TOOL_CALLS:
+                summary = ", ".join(recent_outcomes)
+                report_progress(f"Progress: {summary}. Next request: {display_name}.")
+                recent_outcomes.clear()
+            arguments = None
             is_file_tool = tool_name in ("read_file",
                                          "profile_csv",
                                          "lookup_csv_records",
@@ -309,7 +370,7 @@ def run_agent(
                                          "find_files",)
             # Web content can contain errors
             # Keep operation's status separate from content returned by search
-            uses_structured_result = is_file_tool or tool_name in ("web_search", "fetch_page", "fetch_pdf", "render_page")
+            uses_structured_result = is_file_tool or tool_name in ("web_search", "search_reddit", "fetch_page", "fetch_pdf", "render_page")
             file_result = None
 
             if checkpoint_error is not None or image_cleanup_error is not None or cancel_requested():
@@ -339,6 +400,9 @@ def run_agent(
                             **arguments, on_approval=request_shell_approval,
                             full_access=permission_mode == PermissionMode.FULL,
                         )
+                    elif tool_name == "search_reddit":
+                        result = tool_function(**arguments, on_web_approval=request_web_approval,
+                                               lookup_scope=reddit_scope)
                     elif tool_name == "web_search":
                         # Supply Oceanus' callback
                         result = tool_function(**arguments, on_web_approval=request_web_approval)
@@ -440,6 +504,10 @@ def run_agent(
                     ensure_ascii=False
                 )
 
+            if (first_edit_turn is None and tool_name in ("edit_file", "write_file")
+                    and file_result is not None and file_result["status"] == "success"):
+                first_edit_turn = turn
+
             # Record results
             append_message(
                 {
@@ -451,6 +519,8 @@ def run_agent(
 
             if on_tool_status is not None and file_result is not None:
                 on_tool_status(tool_name, file_result["status"])
+            if on_progress is not None:
+                recent_outcomes.append(describe_tool_outcome(display_name, arguments, file_result))
             
             if on_tool_result is not None:
                 on_tool_result(tool_name, result)
@@ -463,9 +533,9 @@ def run_agent(
 
         if cancel_requested():
             return "Task cancelled."
-
-        if cancel_requested():
-            return "Task cancelled."
+        # A pending correction can take over before another model turn or compaction
+        if followups_waiting is not None and followups_waiting():
+            return None
 
     return (
           f"Stopped after {max_turns} model turns: the model still requested tools. "
