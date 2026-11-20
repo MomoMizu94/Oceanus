@@ -174,6 +174,7 @@ class OceanusApp(App, inherit_bindings=False):
         self.workspace = Path.cwd().resolve()
         self.session_path = new_session_path()
         self.session_state_saved = False
+        self.checkpoint_failed = Event()
         self.coding_prompt = (
             files("agents.coding")
             .joinpath("system_prompt.md")
@@ -319,6 +320,8 @@ class OceanusApp(App, inherit_bindings=False):
 
     def command_descriptions(self) -> dict[str, str]:
         commands = COMMANDS.copy()
+        if self.checkpoint_failed.is_set() and not self.busy:
+            commands["save"] = "Retry saving this conversation"
         for command in self.get_system_commands(self.screen):
             commands[command.title.lower()] = command.help
         return commands
@@ -364,7 +367,7 @@ class OceanusApp(App, inherit_bindings=False):
         if editor.disabled or editor.paste_pending or len(self.screen_stack) != 1:
             return
         system_actions = {command.title.lower(): command.callback for command in self.get_system_commands(self.screen)}
-        if name not in COMMANDS and name not in system_actions:
+        if name not in self.command_descriptions():
             self.notify(f"Unknown command /{name}. Type / to see the commands.")
             return
         editor.load_text("")
@@ -385,6 +388,7 @@ class OceanusApp(App, inherit_bindings=False):
             "exit": self.action_quit, "continue": self.action_continue_session,
             "open": self.action_open_session,
             "cancel": self.action_cancel_task, "skills": editor.action_choose_skill,
+            "save": self.retry_session_save,
         }
         actions.update(system_actions)
         result = actions[name]()
@@ -422,6 +426,8 @@ class OceanusApp(App, inherit_bindings=False):
 
         if self.busy and self.cancel_event.is_set():
             self.notify("Wait for cancellation to finish before sending.")
+            return
+        if not self.busy and self.checkpoint_failed.is_set() and not self.retry_session_save():
             return
         message = {"role": "user", "content": task}
         if event.attachments:
@@ -675,6 +681,7 @@ class OceanusApp(App, inherit_bindings=False):
                 conversation_history=history,
                 active_messages=active_messages,
                 checkpoint_path=self.session_path,
+                on_checkpoint_failure=self.checkpoint_failed.set,
                 on_progress=self.report_progress,
                 on_approval=self.request_approval,
                 on_file_approval=self.request_file_approval,
@@ -726,6 +733,8 @@ class OceanusApp(App, inherit_bindings=False):
             self.conversation_history = history
             self.active_messages = active_messages
             self.session_state_saved = False
+        if self.checkpoint_failed.is_set():
+            failed = True
         if failed or history is None:
             kind = "error"
         else:
@@ -761,7 +770,15 @@ class OceanusApp(App, inherit_bindings=False):
 
         task_input = self.query_one("#task-input", PromptEditor)
         task_input.placeholder = "Ask Oceanus anything"
-        self.query_one("#activity", Static).update("")
+        activity = self.query_one("#activity", Static)
+        if self.checkpoint_failed.is_set():
+            activity.update("Conversation unsaved. Fix the storage issue, then type /save to retry.")
+            task_input.command_names.add("save")
+            task_input.highlight_tokens(self.query_one(CommandMenu).skill_names)
+            if re.fullmatch(r"/[a-z]*", task_input.text):
+                self.query_one(CommandMenu).show_matches(task_input.text[1:], self.command_descriptions())
+        else:
+            activity.update("")
         task_input.disabled = False
         task_input.focus()
 
@@ -851,7 +868,7 @@ class OceanusApp(App, inherit_bindings=False):
 
         self.apply_session(path, history, workspace, active_messages=active_messages)
 
-    def preserve_outgoing_session(self) -> None:
+    def preserve_outgoing_session(self) -> Path:
         destination = self.session_path
         try:
             saved, active, workspace = load_session_state(destination)
@@ -860,11 +877,11 @@ class OceanusApp(App, inherit_bindings=False):
         else:
             # An idle terminal may still be displaying an older saved conversation
             if self.session_state_saved and workspace == self.workspace:
-                return
+                return destination
             history = self.conversation_history
             local_active = self.active_messages if self.active_messages is not None else history
             if workspace == self.workspace and saved == history and active == local_active:
-                return
+                return destination
             # Keep both versions when local work differs from the checkpoint
             destination = destination.with_name(new_session_path().name)
         save_session(
@@ -873,6 +890,22 @@ class OceanusApp(App, inherit_bindings=False):
         )
         if destination != self.session_path:
             self.notify(f"Saved the local conversation separately at {destination}")
+        return destination
+
+    def retry_session_save(self) -> bool:
+        try:
+            path = self.preserve_outgoing_session()
+        except (OSError, ValueError, TypeError) as error:
+            self.write_message(f"Conversation still unsaved: {error}. Type /save to retry.", kind="error")
+            return False
+        self.session_path = path
+        self.session_state_saved = True
+        self.checkpoint_failed.clear()
+        self.query_one(PromptEditor).command_names.discard("save")
+        self.query_one("#activity", Static).update("")
+        self.query_one("#workspace-path", Static).tooltip = f"{self.workspace}\nSession file: {path}"
+        self.write_message(f"Conversation saved to {path}", kind="notice")
+        return True
 
     def apply_session(
         self, path: Path, history: list[dict], workspace: Path,
@@ -900,6 +933,9 @@ class OceanusApp(App, inherit_bindings=False):
         self.active_messages = active_messages
         self.session_path = path
         self.session_state_saved = True
+        self.checkpoint_failed.clear()
+        self.query_one(PromptEditor).command_names.discard("save")
+        self.query_one("#activity", Static).update("")
         conversation = self.query_one("#conversation", VerticalScroll)
         conversation.remove_children(ConversationMessage)
         self.request_previews.clear()
@@ -947,6 +983,8 @@ class OceanusApp(App, inherit_bindings=False):
     async def action_quit(self) -> None:
         if self.busy:
             self.notify("wait for the current task to finish before quitting.")
+            return
+        if self.checkpoint_failed.is_set() and not self.retry_session_save():
             return
         self.exit()
 

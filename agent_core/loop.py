@@ -51,6 +51,7 @@ def run_agent(
         reasoning: str | bool | None = None,
         active_messages: list[dict] | None = None,
         checkpoint_path: str | None = None,
+        on_checkpoint_failure: Callable[[], None] | None = None,
         permission_mode: PermissionMode | str = PermissionMode.ASK,
         followups_waiting: Callable[[], bool] | None = None,
         ) -> str | None:
@@ -171,6 +172,8 @@ def run_agent(
             )
         except CheckpointError as error:
             # Stop this task after the first save failure
+            if on_checkpoint_failure is not None:
+                on_checkpoint_failure()
             checkpoint_error = (
                 f"Stopped: {error}. No further tools will run in this task. "
                 "Completed actions were not undone."

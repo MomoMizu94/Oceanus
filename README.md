@@ -20,7 +20,7 @@ python -m pip install -e .
 
 Choose how you want to run the model before sending your first prompt.
 
-- For **local inference**, start Ollama with a model that supports tool calls. Oceanus lists installed models from `127.0.0.1:11434`. You can check what's installed with `ollama list`.
+- For **local inference**, start Ollama with a locally installed model that supports tool calls. Oceanus lists models from `127.0.0.1:11434`, but LiteLLM uses `OLLAMA_API_BASE` for inference. To keep model requests on this machine, leave that variable unset or run `export OLLAMA_API_BASE=http://127.0.0.1:11434` in the shell where you launch Oceanus. A remote endpoint receives the active conversation and tool results, including history restored with `/continue`.
 - For **OpenAI**, set `OPENAI_API_KEY` in the shell where you launch Oceanus, then select the OpenAI model. With this option, the conversation and tool results used by the model go to the API.
 
 With the virtual environment still active, change into the directory you want Oceanus to work in. For a first run, you can use an empty folder.
@@ -36,6 +36,8 @@ Type `/model` to pick your model. For a quick tour of file approvals, open `/per
 > Create a file called hello.txt containing the words Hello from Oceanus on one line.
 
 Approve the write, then open `hello.txt` to see the result. Oceanus saves your conversation automatically under `~/.local/share/oceanus/sessions/`. To pick up where you left off, use `/exit`, relaunch Oceanus from the same directory, and type `/continue`.
+
+If autosave fails, Oceanus keeps the conversation in memory. Fix the storage issue and type `/save` to retry. `/exit` also retries and keeps the window open if saving still fails.
 
 ## Common commands
 
@@ -59,4 +61,4 @@ Web search uses Tavily and reads `TAVILY_API_KEY` from the environment. Local im
 
 ## Trying it out
 
-If you try Oceanus on one of your projects, I'd like to hear where it helped and where you had to step in. For a bug, open a GitHub issue with the prompt or steps that reproduce it, the model and permission mode you used, and what happened compared with what you expected.
+If you try Oceanus on one of your projects, I'd like to hear where it helped and where you had to step in. For a bug, open a GitHub issue with a small made-up prompt or redacted steps that reproduce it. Include the model, permission mode, and what you expected and saw. Keep credentials, customer data, and private code out of the example. Please don't upload raw session JSON or tool output.
