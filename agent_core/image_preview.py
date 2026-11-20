@@ -58,7 +58,8 @@ class ImagePreview(Vertical):
         self.image_widget = TerminalImage(classes='preview-image')
 
     def compose(self) -> ComposeResult:
-        with Collapsible(title='Preview', collapsed=False):
+        with Collapsible(title='Preview', collapsed=False) as preview:
+            preview.can_focus_children = False
             with Container(classes='preview-frame'):
                 yield self.image_widget
             yield Static(f'{self.reference.label} · Loading preview…', markup=False, classes='preview-caption')

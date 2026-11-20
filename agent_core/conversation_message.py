@@ -140,7 +140,8 @@ class ConversationMessage(Vertical):
 
     def compose(self) -> ComposeResult:
         if self.has_class("tool"):
-            with Collapsible(title=escape(self.heading), collapsed=True, classes="tool-details"):
+            with Collapsible(title=escape(self.heading), collapsed=True, classes="tool-details") as details:
+                details.can_focus_children = False
                 yield LiteralMessageBody(self.text)
         elif self.heading in ("You", "Agent", "Status", "Notice"):
             marker = "›" if self.has_class("user") else "•"

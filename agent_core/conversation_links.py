@@ -21,9 +21,13 @@ def is_web_url(url: str) -> bool:
         return False
 
 
-def _preserve_link_escapes(state: StateCore) -> None:
-    # Textual decodes link targets once on click, including reserved characters like %26
+def _prepare_transcript_tokens(state: StateCore) -> None:
     for token in state.tokens:
+        # Textual otherwise guesses a language for unlabelled snippets
+        if token.type in ("fence", "code_block") and not token.info.strip():
+            token.info = "text"
+
+        # Textual decodes link targets once on click, including reserved characters like %26
         for child in token.children or ():
             if child.type in ("link_open", "image"):
                 attribute = "href" if child.type == "link_open" else "src"
@@ -34,7 +38,7 @@ def _preserve_link_escapes(state: StateCore) -> None:
 
 def conversation_markdown_parser() -> MarkdownIt:
     parser = MarkdownIt("gfm-like")
-    parser.core.ruler.push("preserve_link_escapes", _preserve_link_escapes)
+    parser.core.ruler.push("prepare_transcript_tokens", _prepare_transcript_tokens)
     return parser
 
 
