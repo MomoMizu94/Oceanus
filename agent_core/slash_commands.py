@@ -1,10 +1,12 @@
 """Prompt shortcuts for the actions already available in the terminal UI."""
 
 import asyncio
+from collections import Counter
 
 from textual import work
 from textual.widgets import OptionList
 from textual.geometry import Size
+from textual.message import Message
 from textual.widgets.option_list import Option
 
 from agent_core.skill_picker import skill_options
@@ -19,10 +21,8 @@ COMMANDS = {
     "permissions": "Change tool permissions",
     "turns": "Set the turn limit",
     "skills": "Insert an installed skill",
-    "save": "Save this conversation",
     "open": "Open a session from any workspace",
     "cancel": "Interrupt the active task",
-    "palette": "Open the command palette",
     "exit": "Exit Oceanus",
 }
 
@@ -32,6 +32,10 @@ class CommandMenu(OptionList):
 
     skill_prefix: str | None = None
     skill_catalog: tuple[list[Skill], list[str]] | None = None
+    skill_names: frozenset[str] = frozenset()
+
+    class SkillsLoaded(Message):
+        """The editor can now highlight names from the refreshed catalog."""
 
     def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
         return min(8, super().get_content_height(container, viewport, width))
@@ -47,13 +51,9 @@ class CommandMenu(OptionList):
             self.highlighted = 0
 
     def show_skill_matches(self, prefix: str) -> None:
-        opening = self.skill_prefix is None or not self.display
         self.skill_prefix = prefix
         self.display = True
         self.clear_options()
-        if opening:
-            self.skill_catalog = None
-            self.load_skills()
         if self.skill_catalog is None:
             self.add_option(Option("Loading skills…", disabled=True))
             return
@@ -71,6 +71,9 @@ class CommandMenu(OptionList):
             self.skill_catalog = await asyncio.to_thread(discover_skills)
         except (OSError, ValueError) as error:
             self.skill_catalog = ([], [f"Could not load skills: {error}"])
+        counts = Counter(skill.name for skill in self.skill_catalog[0])
+        self.skill_names = frozenset(name for name, count in counts.items() if count == 1)
+        self.post_message(self.SkillsLoaded())
         if self.skill_prefix is not None and self.display:
             self.show_skill_matches(self.skill_prefix)
 

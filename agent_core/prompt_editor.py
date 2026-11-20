@@ -1,6 +1,7 @@
 from copy import deepcopy
 import asyncio
 
+from rich.text import Text
 from textual.widgets import TextArea
 from textual.events import Key
 from textual.message import Message
@@ -11,6 +12,7 @@ from textual.binding import Binding
 from agent_core.prompt_image_edit import ImageMarker, PromptEdit
 from agent_core.clipboard_images import read_clipboard_image
 from agent_core.skill_picker import SkillPicker
+from agent_core.skills import skill_mentions
 from agent_core.slash_commands import CommandMenu
 from agent_core.image_attachments import MAX_IMAGES_PER_MESSAGE, save_image_bytes
 
@@ -35,12 +37,17 @@ class PromptEditor(TextArea):
         Binding("f2", "choose_skill", "Skills"),
     ]
 
+    COMPONENT_CLASSES = {"prompt--token"}
     DEFAULT_CSS = """
     PromptEditor {
         height: 7;
         min-height: 3;
         background: $surface;
         color: $foreground;
+    }
+    PromptEditor .prompt--token {
+        color: $accent;
+        text-style: bold;
     }
     """
 
@@ -49,6 +56,8 @@ class PromptEditor(TextArea):
         self.paste_pending = False
         self.image_markers: list[ImageMarker] = []
         self.command_menu: CommandMenu | None = None
+        self.command_names: set[str] = set()
+        self.token_ranges: dict[int, list[tuple[int, int]]] = {}
         self.next_image_number = 1
         super().__init__(
             id=id,
@@ -62,6 +71,34 @@ class PromptEditor(TextArea):
             highlight_cursor_line=False,
             placeholder="Ask Oceanus anything",
         )
+
+    def highlight_tokens(self, skills: frozenset[str]) -> None:
+        ranges: dict[int, list[tuple[int, int]]] = {}
+        draft = self.text
+        command = draft.strip()
+        if command.startswith("/") and command[1:] in self.command_names:
+            for row, line in enumerate(self.document.lines):
+                start = line.find(command)
+                if start >= 0:
+                    ranges[row] = [(start, start + len(command))]
+                    break
+        elif skills and "$" in draft:
+            for row, start, name in skill_mentions(self.document.lines):
+                if name in skills:
+                    end = start + 1 + len(name)
+                    ranges.setdefault(row, []).append((start, end))
+
+        if ranges != self.token_ranges:
+            self.token_ranges = ranges
+            self.notify_style_update()
+            self.refresh()
+
+    def get_line(self, line_index: int) -> Text:
+        line = super().get_line(line_index)
+        for start, end in self.token_ranges.get(line_index, ()):
+            style = self.get_component_rich_style("prompt--token", partial=True)
+            line.stylize(style, start, end)
+        return line
 
     def edit(self, edit: Edit) -> EditResult:
         # Route ordinary typing and deletion through marker-aware edits

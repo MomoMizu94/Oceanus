@@ -17,3 +17,6 @@ dist/
 remember.txt
 tests/
 docs/
+
+# Agents
+AGENTS.md

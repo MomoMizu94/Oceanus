@@ -1,5 +1,5 @@
 """ Discover local skills and load explicitly requested instructions """
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -144,13 +144,12 @@ def discover_skills() -> tuple[list[Skill], list[str]]:
     return skills, warnings
 
 
-def requested_skill_names(task: str) -> list[str]:
-    """ Ignore escaped dollars, inline code, and fenced code blocks """
-    names = []
+def skill_mentions(lines: Iterable[str]) -> Iterator[tuple[int, int, str]]:
+    """Yield the row, dollar-sign column, and name of each active mention."""
     fence_character = ""
     fence_length = 0
     inline_delimiter = ""
-    for line in task.splitlines():
+    for row, line in enumerate(lines):
         fence = re.match(r"^\s{0,3}(`{3,}|~{3,})(.*)$", line)
         if fence:
             marker, remainder = fence.groups()
@@ -163,6 +162,7 @@ def requested_skill_names(task: str) -> list[str]:
             continue
         if fence_character:
             continue
+        column = 0
         for part in re.split(r"(`+)", line):
             if part.startswith("`"):
                 if not inline_delimiter:
@@ -172,8 +172,16 @@ def requested_skill_names(task: str) -> list[str]:
             elif not inline_delimiter:
                 for match in SKILL_MENTION.finditer(part):
                     name = match.group(1)
-                    if valid_skill_name(name) and name not in names:
-                        names.append(name)
+                    if valid_skill_name(name):
+                        yield row, column + match.start(), name
+            column += len(part)
+
+
+def requested_skill_names(task: str) -> list[str]:
+    names = []
+    for _, _, name in skill_mentions(task.splitlines()):
+        if name not in names:
+            names.append(name)
     return names
 
 

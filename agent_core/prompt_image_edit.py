@@ -35,7 +35,9 @@ class PromptEdit(Edit):
 
         document = text_area.document
         start = document.get_index_from_location(self.top)
-        end = document.get_index_from_location(self.bottom)
+        # Textual cuts through the start of the next line, even on the last line
+        previous_length = len(document.text)
+        end = min(document.get_index_from_location(self.bottom), previous_length)
         self.before_markers = deepcopy(text_area.image_markers)
 
         for marker in self.before_markers:
@@ -59,7 +61,6 @@ class PromptEdit(Edit):
 
         self.from_location = document.get_location_from_index(start)
         self.to_location = document.get_location_from_index(end)
-        previous_length = len(document.text)
 
         result = super().do(text_area, record_selection)
         length_change = len(document.text) - previous_length
